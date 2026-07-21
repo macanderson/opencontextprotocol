@@ -150,3 +150,113 @@ reuse both cache-friendly *and* safe from serving stale evidence.
 | D2 | A host composing a frame set **MUST** emit frames in canonical `FrameId` order, independent of arrival order. | `compose_context` round-trip test |
 | D3 | Composition **MUST NOT** depend on `score` or `token_cost`. | `compose_context` relevance-invariance test |
 | D4 | A frame with no `content_digest` **MUST** be treated as unverifiable and re-queried, never reused unchecked. | host verify fallback (§4) |
+
+---
+
+## 2. Usage reports
+
+### The problem
+
+Every frame carries an honest `token_cost` ([budget honesty](./protocol-surface.md#budget-honesty), B1), but the protocol otherwise stops at the frame. A host that meters context into a billing system — the usage-events → ClickHouse → Stripe loop that platforms reselling agents run — has to invent its own aggregate: which providers served how many frames, at what token cost, against which budget. Every host inventing that shape independently means context cost stays unauditable one level up from the wire — the blob-pipe problem reborn at the accounting layer, where "what did this turn cost, and which sources drove it?" has no standard answer.
+
+### The report
+
+A **usage report** is the per-request roll-up, bound to Rust as
+[`UsageReport`](https://docs.rs/contextgraph-types/latest/contextgraph_types/usage/struct.UsageReport.html):
+
+```rust
+pub struct UsageReport {
+    pub budget_requested: u32,          // the query's max_tokens
+    pub budget_consumed: u64,           // summed token_cost of every served frame
+    pub as_of: String,                  // the report's accounting snapshot (RFC 3339)
+    pub providers: Vec<ProviderUsage>,  // one entry per provider the query reached
+}
+
+pub struct ProviderUsage {
+    pub provider_id: String,
+    pub frames_served: u32,             // accepted (passed consent, timeout, budget audit)
+    pub frames_rejected: u32,           // dropped — e.g. a budget lie, or (§4) a stale verify verdict
+    pub token_cost: u64,                // this provider's contribution to budget_consumed
+    pub served_frames: Vec<ServedFrame>,// each served frame, by identity + declared cost
+}
+
+pub struct ServedFrame {
+    pub frame: FrameId,                 // the stable identity from §1
+    pub token_cost: u32,                // the cost this frame contributed
+}
+```
+
+Three properties make it usable as an accounting record rather than a debug dump:
+
+- **It is a host-side artifact, not a wire message.** No new envelope variant, no new required field: a provider implements nothing to make one possible. The report rides the frames a query already returned.
+- **It references served frames by their §1 identity.** `budget_requested` / `budget_consumed` are the roll-up an invoice line quotes; `served_frames` is the drill-down an auditor walks — from a billed total to the exact `(provider id, frame id, content digest)` triples behind it.
+- **Its `as_of` is the report's snapshot time**, stamped by the producing host — *not* a query's bi-temporal [`as_of`](./protocol-surface.md#context-query) retrieval pin. The two are different clocks: one dates the accounting event, the other dates the facts retrieved.
+
+The reference host produces one from a fan-out with
+[`FanOut::usage_report(&query, as_of)`](https://docs.rs/contextgraph-host/latest/contextgraph_host/host/struct.FanOut.html#method.usage_report).
+Accepted frames are itemized; a budget-lying provider's dropped frames count as
+`frames_rejected` and contribute zero cost; a consent-gated or failed provider
+served nothing. Because the host sums the totals from the very frames it
+itemizes, the result always satisfies the arithmetic identity below.
+
+### The arithmetic identity
+
+The report is **self-verifying**: `budget_consumed` re-sums from
+`providers[].token_cost`, which re-sums from `served_frames[].token_cost`. A
+metering pipeline checks this before trusting a total —
+[`UsageReport::is_consistent()`](https://docs.rs/contextgraph-types/latest/contextgraph_types/usage/struct.UsageReport.html#method.is_consistent)
+is the one call — so a corrupted or tampered total is a checkable arithmetic
+failure, never a silent misbill. The conformance case (below) proves the
+identity holds against a *real* provider: it re-sums the accepted frames
+independently and asserts equality with the report the host built.
+
+### Worked example: mapping a report into a metering pipeline
+
+A reseller host bills its customers for context by the token. After each turn it
+takes the fan-out's report and fans it out into per-provider usage events:
+
+```rust
+// `as_of` is caller-supplied: the host stamps the report with its own RFC 3339
+// clock (the accounting-event time), keeping the type free of a time dependency.
+let report = fanout.usage_report(&query, now_rfc3339());
+assert!(report.is_consistent()); // refuse to bill an inconsistent total
+
+for provider in &report.providers {
+    // One append-only usage event per (turn, provider) — the ClickHouse row.
+    meter.emit(UsageEvent {
+        request_id,
+        turn_id,
+        provider_id: &provider.provider_id,
+        frames_served: provider.frames_served,
+        frames_rejected: provider.frames_rejected,
+        tokens: provider.token_cost,         // the metered quantity
+        as_of: &report.as_of,
+        // The drill-down: the exact frames behind this line, for dispute
+        // resolution and audit. Stored alongside the event, not billed twice.
+        frames: &provider.served_frames,
+    });
+}
+```
+
+- **ClickHouse (append-only runtime events):** each `UsageEvent` is one row.
+  `tokens` is the metered measure; `provider_id` and `as_of` are the grouping
+  keys; `frames` (the `ServedFrame` list) is the citation trail an auditor
+  follows from a monthly total back to individual turns and frames.
+- **Stripe (billing):** a periodic job sums `tokens` per customer over the
+  billing window and reports it to a Stripe metered price. Because
+  `budget_consumed` equals the summed `token_cost` of served frames by
+  construction, the number a customer is billed is the number the frames
+  actually cost — the honest-cost guarantee carried all the way to the invoice.
+- **Dispute path:** a customer questioning a charge is answered by the same
+  `served_frames` identities — every billed token maps to a cited frame with a
+  provider, a frame id, and a content digest, not an opaque aggregate.
+
+This is the payoff of pairing the report with §1's identity: the identity makes
+the frames *nameable*, and the report makes them *countable*, so context cost is
+auditable from the wire all the way up to the invoice line.
+
+### Conformance (§2)
+
+| # | Requirement | Enforced / verified by |
+| - | ----------- | ---------------------- |
+| U1 | A host **MUST** be able to produce a usage report for any query it executed, whose `budget_consumed` equals the summed `token_cost` of the served frames it reports. | `FanOut::usage_report`; `usage_report` conformance case (drives the real fixture, re-sums independently) |
