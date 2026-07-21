@@ -5,7 +5,7 @@
 
 use contextgraph_conformance::{
     CHECK_BUDGET_HONESTY, CHECK_FRAME_VALIDITY, CHECK_HANDSHAKE, CHECK_MALFORMED, CHECK_SHUTDOWN,
-    CheckStatus, ProviderTarget, run_conformance,
+    CHECK_VERIFY_HONESTY, CheckStatus, ProviderTarget, run_conformance,
 };
 
 /// Path to the fixture binary, built automatically for integration tests.
@@ -37,11 +37,12 @@ async fn a_well_behaved_provider_is_fully_conformant() {
         "expected conformant; failures: {:?}",
         report.failures().collect::<Vec<_>>()
     );
-    // All five checks ran and passed (none skipped for a stdio provider).
-    assert_eq!(report.checks.len(), 5);
+    // All six checks ran and passed (none skipped for a stdio provider).
+    assert_eq!(report.checks.len(), 6);
     for name in [
         CHECK_HANDSHAKE,
         CHECK_FRAME_VALIDITY,
+        CHECK_VERIFY_HONESTY,
         CHECK_BUDGET_HONESTY,
         CHECK_SHUTDOWN,
         CHECK_MALFORMED,
@@ -100,4 +101,28 @@ async fn an_incompatible_protocol_version_fails_the_handshake() {
         status_of(&report, CHECK_FRAME_VALIDITY),
         CheckStatus::Skipped
     );
+}
+
+#[tokio::test]
+async fn rubber_stamping_every_verify_as_valid_fails_verify_honesty() {
+    // The dangerous lie: a provider that answers `valid` without comparing
+    // digests lets a host go on citing evidence that changed underneath it.
+    let report = run_conformance(target(&["--misbehave", "rubber-stamp-verify"])).await;
+    assert!(!report.passed());
+    assert_eq!(status_of(&report, CHECK_VERIFY_HONESTY), CheckStatus::Fail);
+    // Nothing else is disturbed — the frames it serves are still well-formed
+    // and honestly costed, so only the verify check catches this.
+    for name in [CHECK_HANDSHAKE, CHECK_FRAME_VALIDITY, CHECK_BUDGET_HONESTY] {
+        assert_eq!(status_of(&report, name), CheckStatus::Pass, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn advertising_verify_while_vouching_for_nothing_fails_verify_honesty() {
+    // The other direction: a provider that claims the capability but answers
+    // `unknown` to everything cannot revalidate its own just-served frames.
+    let report = run_conformance(target(&["--misbehave", "hollow-verify"])).await;
+    assert!(!report.passed());
+    assert_eq!(status_of(&report, CHECK_VERIFY_HONESTY), CheckStatus::Fail);
+    assert_eq!(status_of(&report, CHECK_HANDSHAKE), CheckStatus::Pass);
 }

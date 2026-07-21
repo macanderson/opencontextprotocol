@@ -11,11 +11,12 @@
 //! dropped for a budget lie, or crashing mid-query never poisons the others
 //! (task deliverable 5).
 
+use std::collections::HashMap;
 use std::time::Duration;
 
 use contextgraph_types::{
-    ContextFrame, ContextQuery, ContextQueryResult, DataFlow, ProviderUsage, ServedFrame,
-    UsageReport,
+    ContextFrame, ContextQuery, ContextQueryResult, DataFlow, FrameId, ProviderUsage, ServedFrame,
+    UsageReport, Verdict, VerifyRequest,
 };
 
 use crate::consent::{ConsentRecord, ConsentStore};
@@ -121,6 +122,117 @@ impl Host {
 
     pub fn is_empty(&self) -> bool {
         self.providers.is_empty()
+    }
+
+    /// Revalidate frames this host already holds, so unchanged context can be
+    /// reused without re-querying it (`docs/context-reuse.md` §4).
+    ///
+    /// Identities are grouped by provider and each capable provider is asked
+    /// once. The rule is **default-deny**: a frame is retained only on an
+    /// explicit [`Verdict::Valid`], and every other outcome — a negative
+    /// verdict, a missing digest, a provider that doesn't support verify, an
+    /// unregistered provider, a failed request — drops the frame with a reason
+    /// (requirement V2). Reasons that
+    /// [warrant a re-query](DropReason::warrants_requery) tell the host which
+    /// dropped frames are worth fetching again.
+    ///
+    /// This method holds **no state**: it neither caches frames nor tracks turn
+    /// boundaries. When to re-verify is the host's policy (§4 gives informative
+    /// guidance); the protocol's job is only to answer the question when asked.
+    /// No frame body travels in either direction.
+    pub async fn verify_frames(&self, held: &[FrameId]) -> VerifyOutcome {
+        use futures_util::future::join_all;
+
+        // Group by provider, preserving first-seen provider order so the
+        // outcome is deterministic for a given input.
+        let mut order: Vec<&str> = Vec::new();
+        let mut grouped: HashMap<&str, Vec<FrameId>> = HashMap::new();
+        for frame in held {
+            let id = frame.provider_id.as_str();
+            if !grouped.contains_key(id) {
+                order.push(id);
+            }
+            grouped.entry(id).or_default().push(frame.clone());
+        }
+
+        let legs = order.into_iter().map(|provider_id| {
+            let frames = grouped.remove(provider_id).unwrap_or_default();
+            self.verify_one_provider(provider_id, frames)
+        });
+
+        let mut outcome = VerifyOutcome::default();
+        for leg in join_all(legs).await {
+            outcome.retained.extend(leg.retained);
+            outcome.dropped.extend(leg.dropped);
+        }
+        outcome
+    }
+
+    /// Verify one provider's slice of the held set, converting every failure
+    /// mode into dropped frames rather than a propagated error — one provider's
+    /// verify failure never affects another's.
+    async fn verify_one_provider(&self, provider_id: &str, frames: Vec<FrameId>) -> VerifyOutcome {
+        let mut outcome = VerifyOutcome::default();
+
+        let Some(provider) = self.provider(provider_id) else {
+            outcome.drop_all(frames, DropReason::UnknownProvider);
+            return outcome;
+        };
+        if !provider.capabilities().verify {
+            // The declared fallback: a provider that can't verify gets its
+            // frames re-queried rather than trusted (§4, requirement V3).
+            outcome.drop_all(frames, DropReason::VerifyUnsupported);
+            return outcome;
+        }
+
+        // A frame with no digest can't be revalidated — §1's D4 makes that a
+        // re-query, not a reuse. Filter before asking, so the request only
+        // carries answerable identities.
+        let (verifiable, undigested): (Vec<FrameId>, Vec<FrameId>) =
+            frames.into_iter().partition(FrameId::is_verifiable);
+        outcome.drop_all(undigested, DropReason::NoDigest);
+        if verifiable.is_empty() {
+            return outcome;
+        }
+
+        let request = VerifyRequest::new(verifiable.clone());
+        let response = match tokio::time::timeout(
+            self.per_provider_timeout,
+            provider.verify(&request),
+        )
+        .await
+        {
+            Ok(Ok(response)) => response,
+            Ok(Err(error)) => {
+                outcome.drop_all(verifiable, DropReason::VerifyFailed(error.to_string()));
+                return outcome;
+            }
+            Err(_) => {
+                let error = HostError::Timeout {
+                    id: provider_id.to_string(),
+                    timeout_ms: self.per_provider_timeout.as_millis() as u64,
+                };
+                outcome.drop_all(verifiable, DropReason::VerifyFailed(error.to_string()));
+                return outcome;
+            }
+        };
+
+        for frame in verifiable {
+            // Correlate by full identity, never by position. A provider that
+            // omits an answer gets `Unknown` — silence is not validity.
+            match response.verdict_for(&frame) {
+                Some(Verdict::Valid) => outcome.retained.push(frame),
+                Some(Verdict::Stale { replacement_digest }) => outcome.drop_one(
+                    frame,
+                    DropReason::Stale {
+                        replacement_digest: replacement_digest.clone(),
+                    },
+                ),
+                Some(Verdict::Gone) => outcome.drop_one(frame, DropReason::Gone),
+                Some(Verdict::Unknown) | None => outcome.drop_one(frame, DropReason::Unknown),
+            }
+        }
+        outcome
     }
 
     /// Query a single provider by id, honoring the consent gate and the
@@ -412,6 +524,102 @@ pub enum ProviderResult {
     ConsentRequired(DataFlow),
     /// The provider errored, timed out, or crashed mid-query.
     Failed(HostError),
+}
+
+/// Why a held frame was dropped by [`Host::verify_frames`]
+/// (`docs/context-reuse.md` §4).
+///
+/// The first three mirror the provider's [`Verdict`]s; the rest are host-side
+/// reasons a frame could not be revalidated at all. Either way the frame leaves
+/// the composed context — the difference matters only for deciding whether to
+/// re-query it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DropReason {
+    /// The provider answered `stale`: the frame exists but its content changed.
+    /// Carries the provider's current digest when it offered one.
+    Stale { replacement_digest: Option<String> },
+    /// The provider answered `gone` — the frame no longer exists.
+    Gone,
+    /// The provider answered `unknown`, or returned no verdict for the frame at
+    /// all. Silence is not validity.
+    Unknown,
+    /// The frame carries no `content_digest`, so it cannot be revalidated
+    /// (§1, requirement D4).
+    NoDigest,
+    /// The provider does not advertise the `verify` capability, so the host
+    /// falls back to re-querying its frames (§4, requirement V3).
+    VerifyUnsupported,
+    /// No provider with this frame's `provider_id` is registered with the host.
+    UnknownProvider,
+    /// The verify request itself failed — a transport error or a timeout.
+    VerifyFailed(String),
+}
+
+impl DropReason {
+    /// Whether re-querying the provider could recover usable content for this
+    /// frame. False only for [`Gone`](Self::Gone) — every other reason means
+    /// the host simply doesn't have a trustworthy copy and should ask again.
+    pub fn warrants_requery(&self) -> bool {
+        !matches!(self, Self::Gone)
+    }
+}
+
+/// One dropped frame and why (`docs/context-reuse.md` §4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DroppedFrame {
+    /// The identity that was dropped.
+    pub frame: FrameId,
+    /// Why it was dropped.
+    pub reason: DropReason,
+}
+
+/// The result of revalidating a held frame set (`docs/context-reuse.md` §4).
+///
+/// Partitions the input into frames the host may keep reusing and frames it
+/// must drop. The partition is **total and default-deny**: every input identity
+/// appears in exactly one of the two lists, and it lands in `retained` only on
+/// an explicit `valid`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct VerifyOutcome {
+    /// Frames that verified `valid` — safe to keep reusing, and the frames
+    /// whose byte-stable reuse §1's canonical ordering was built to protect.
+    pub retained: Vec<FrameId>,
+    /// Frames that must leave the composed context, each with its reason.
+    pub dropped: Vec<DroppedFrame>,
+}
+
+impl VerifyOutcome {
+    /// The dropped frames worth re-querying — everything except `gone`, which
+    /// is not there to re-fetch.
+    pub fn requery(&self) -> impl Iterator<Item = &FrameId> {
+        self.dropped
+            .iter()
+            .filter(|dropped| dropped.reason.warrants_requery())
+            .map(|dropped| &dropped.frame)
+    }
+
+    /// Whether an identity was dropped.
+    pub fn was_dropped(&self, frame: &FrameId) -> bool {
+        self.dropped.iter().any(|dropped| &dropped.frame == frame)
+    }
+
+    /// The reason an identity was dropped, if it was.
+    pub fn drop_reason(&self, frame: &FrameId) -> Option<&DropReason> {
+        self.dropped
+            .iter()
+            .find(|dropped| &dropped.frame == frame)
+            .map(|dropped| &dropped.reason)
+    }
+
+    fn drop_one(&mut self, frame: FrameId, reason: DropReason) {
+        self.dropped.push(DroppedFrame { frame, reason });
+    }
+
+    fn drop_all(&mut self, frames: impl IntoIterator<Item = FrameId>, reason: DropReason) {
+        for frame in frames {
+            self.drop_one(frame, reason.clone());
+        }
+    }
 }
 
 #[cfg(test)]
