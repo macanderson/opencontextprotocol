@@ -440,6 +440,7 @@ mod tests {
             kind: FrameKind::Doc,
             title: "README".into(),
             content: "hello from a stdio provider".into(),
+            content_digest: None,
             uri: Some("file:///README.md".into()),
             score: 0.7,
             token_cost: 12,

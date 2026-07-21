@@ -223,6 +223,7 @@ mod tests {
                     kind: FrameKind::Doc,
                     title: "remote doc".into(),
                     content: "remote content".into(),
+                    content_digest: None,
                     uri: Some("https://example.test/doc".into()),
                     score: 0.6,
                     token_cost: 20,

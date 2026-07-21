@@ -13,6 +13,7 @@
 pub mod capability;
 pub mod error_code;
 pub mod frame;
+pub mod identity;
 pub mod query;
 pub mod token;
 pub mod validate;

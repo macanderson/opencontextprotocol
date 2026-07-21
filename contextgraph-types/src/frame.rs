@@ -143,6 +143,13 @@ pub struct ContextFrame {
     /// Text the host may quote into a prompt. Untrusted data: a conforming
     /// host delimits this as quoted material, never as instructions.
     pub content: String,
+    /// The provider-declared digest of this frame's content bytes — the third
+    /// component of its stable [`FrameId`](crate::FrameId) identity, opaque to
+    /// the protocol (e.g. `sha256:<hex>`, matching the `provenance` digests).
+    /// Absent ⇒ the frame is not verifiable and a host re-queries it rather
+    /// than reusing it unchecked (`docs/context-reuse.md` §1, §4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_digest: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
     /// Provider-normalized relevance in `[0, 1]`.
@@ -239,6 +246,7 @@ mod tests {
             kind: FrameKind::Snippet,
             title: "workspace.ts L120-160".into(),
             content: "export interface Workspace { ... }".into(),
+            content_digest: Some("sha256:abc".into()),
             uri: Some("file:///repo/workspace.ts".into()),
             score: 0.83,
             token_cost: 412,
@@ -393,9 +401,11 @@ mod tests {
         let mut minimal = frame.clone();
         minimal.uri = None;
         minimal.valid_from = None;
+        minimal.content_digest = None;
         minimal.provenance.clear();
         let json = serde_json::to_string(&minimal).unwrap();
         assert!(!json.contains("\"uri\""));
         assert!(!json.contains("\"provenance\""));
+        assert!(!json.contains("\"content_digest\""));
     }
 }
