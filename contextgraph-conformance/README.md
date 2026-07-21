@@ -55,6 +55,29 @@ isn't conformant, so it's CI-friendly.
 
 See [Running conformance][conformance] for the full guide.
 
+## Golden fixtures
+
+The versioned interoperability fixtures live under
+`fixtures/contextgraph-1.0-draft/`. The profile contains fully populated and
+minimal `ContextFrame` examples, a minimal `ContextQuery`, an intentionally
+invalid blank-citation frame, and RFC 8785 JSON Canonicalization Scheme (JCS)
+normalization vectors. `manifest.json` pins the protocol and fixture-profile
+versions, records the generation command, and carries a lowercase SHA-256
+digest for every other JSON file in the profile.
+
+Each normalization vector records its source JSON text, expected normalized
+JSON value, exact JCS UTF-8 text, and the SHA-256 digest of those canonical
+bytes. These JCS digests are interoperability test vectors, not a new field in
+the Context Graph Protocol or in `ContextFrame`/`ContextQuery` wire messages.
+Ordinary `serde_json` serialization is not a substitute for RFC 8785
+canonicalization.
+
+Validate the fixture profile with:
+
+```console
+cargo test -p contextgraph-conformance --test golden_fixtures
+```
+
 ## Depends on
 
 [`contextgraph-types`](https://crates.io/crates/contextgraph-types) and

@@ -1,0 +1,45 @@
+{
+  "fully_populated": {
+    "id": "frame:policy:retry",
+    "kind": "doc",
+    "title": "Retry policy — café",
+    "content": "Use \"exponential\" backoff.\nRetry at most 3 times.",
+    "uri": "file:///repo/docs/retry%20policy.md",
+    "score": 0.875,
+    "token_cost": 42,
+    "valid_from": "2026-01-01T00:00:00Z",
+    "valid_to": "2026-12-31T23:59:59Z",
+    "recorded_at": "2026-07-21T12:34:56Z",
+    "provenance": [
+      {
+        "type": "file",
+        "uri": "file:///repo/docs/retry%20policy.md",
+        "range": "L10-18",
+        "digest": "sha256:4f2dcbad0f03f6e1c61f9e2d76d7392b4590f40dc13f5413c6f501d6f9844938",
+        "method": "file-read",
+        "by": "repo-indexer"
+      }
+    ],
+    "citation_label": "retry policy.md L10-18",
+    "embedding": {
+      "fingerprint": "text-embedding-v1:sha256:67f8e7",
+      "vector": [0.125, -0.5, 1.0]
+    },
+    "relations": [
+      {
+        "rel": "documents",
+        "target_uri": "symbol:///repo/src/retry.rs#RetryPolicy",
+        "display_name": "RetryPolicy"
+      }
+    ]
+  },
+  "minimal": {
+    "id": "frame:minimal",
+    "kind": "fact",
+    "title": "Minimal conforming frame",
+    "content": "Default arrays are omitted on the wire.",
+    "score": 1.0,
+    "token_cost": 0,
+    "citation_label": "minimal fixture"
+  }
+}

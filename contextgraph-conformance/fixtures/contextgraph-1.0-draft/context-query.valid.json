@@ -1,0 +1,7 @@
+{
+  "query": {
+    "goal": "Find retry guidance for the café service",
+    "max_frames": 8,
+    "max_tokens": 2048
+  }
+}
