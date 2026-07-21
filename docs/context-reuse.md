@@ -260,3 +260,147 @@ auditable from the wire all the way up to the invoice line.
 | # | Requirement | Enforced / verified by |
 | - | ----------- | ---------------------- |
 | U1 | A host **MUST** be able to produce a usage report for any query it executed, whose `budget_consumed` equals the summed `token_cost` of the served frames it reports. | `FanOut::usage_report`; `usage_report` conformance case (drives the real fixture, re-sums independently) |
+
+---
+
+## 4. Context verification
+
+### The problem
+
+§1 makes reusing context **cheap**: an unchanged frame set renders
+byte-identically and rides the provider's prompt cache. But cheap reuse is only
+safe if the frames are still **true**. A retrieved snippet is a claim about a
+source, and sources move — a file is edited, a doc is rewritten, a record is
+deleted. Reuse the frame anyway and the agent cites evidence that no longer
+exists.
+
+Today's only live mechanism for this is push invalidation ([#6](https://github.com/macanderson/context-graph-protocol/issues/6)'s
+`subscribe`), which needs a long-lived channel and a provider able to watch its
+sources. Plenty of providers can't: a stateless HTTP endpoint, a batch-rebuilt
+index, a serverless function. And plenty of hosts don't want a subscription's
+lifecycle just to answer a much simpler question at a turn boundary: *are the
+frames I already hold still valid?*
+
+Without a way to ask, a host is left choosing between two bad options every
+turn — re-query everything (paying tokens and latency, and destroying the very
+prefix stability §1 bought) or reuse silently and risk citing stale evidence.
+
+### The exchange
+
+`context/verify` is the cheap third option. The host sends the
+[frame identities](#frame-identity) it holds; the provider answers one verdict
+each.
+
+```rust
+pub struct VerifyRequest {
+    pub frames: Vec<FrameId>,       // identities only — never bodies
+}
+
+pub struct FrameVerdict {
+    pub frame: FrameId,             // the identity being answered, echoed in full
+    // flattened: {"status": "...", "replacement_digest": "..."}
+    pub verdict: Verdict,
+}
+
+pub enum Verdict {
+    Valid,                                          // unchanged — keep reusing it
+    Stale { replacement_digest: Option<String> },   // changed — drop it
+    Gone,                                           // no longer exists — drop it
+    Unknown,                                        // can't say — don't reuse it
+}
+```
+
+**No frame body travels in either direction.** That is the entire economic
+point: verification costs **bytes, not tokens**, so a host can afford to run it
+every turn over frames it would otherwise have re-fetched in full. Even a
+`stale` verdict carries at most the provider's *current digest* — enough for a
+host to tell what it would be re-fetching, never the replacement content
+itself.
+
+The **digest is the ground truth**. A provider compares the digest the host
+presents against the digest its source has now: equal ⇒ `valid`, different ⇒
+`stale`, source gone ⇒ `gone`, can't tell ⇒ `unknown`. Because the digest is
+provider-declared and opaque (§1), the provider is the only party that *can*
+answer — which is why the conformance case below exists to hold it honest.
+
+Each verdict **echoes the full identity it answers** rather than relying on
+array position, so a provider that reorders, omits, or duplicates entries can
+never shift a `valid` onto the wrong frame.
+
+### Host behavior
+
+Verification is **default-deny**. A host **MUST** keep reusing a held frame
+only on an explicit `valid`; every other outcome drops it (requirement V2). In
+particular an identity that comes back with **no verdict at all** is treated as
+`unknown` — silence is not validity.
+
+The reference host implements this in
+[`Host::verify_frames`](https://docs.rs/contextgraph-host/latest/contextgraph_host/host/struct.Host.html#method.verify_frames),
+which groups held identities by provider, asks each capable provider once, and
+returns a **total partition** of the input into `retained` and `dropped` — no
+held frame is ever silently lost. Each drop carries a
+[`DropReason`](https://docs.rs/contextgraph-host/latest/contextgraph_host/host/enum.DropReason.html),
+and `warrants_requery()` tells the host which dropped frames are worth fetching
+again — false only for `gone`, which is not there to re-fetch.
+
+**Capability gating and fallback.** A host sends `context/verify` only to a
+provider whose handshake advertised `capabilities.verify`. Against a provider
+that doesn't, the host **MUST** fall back to re-querying rather than reusing
+unchecked (requirement V3) — the same fallback a frame with no
+`content_digest` gets (§1, D4). Since `verify` defaults to `false`, an existing
+provider that implements nothing keeps working unchanged, and the reference
+`ContextProvider::verify` default answers `unknown` for everything, so a
+provider can never *accidentally* bless a stale frame.
+
+A verify failure is isolated exactly like a query fan-out leg: a provider that
+errors or times out has *its own* frames dropped for re-query, and never
+affects another provider's.
+
+**When to verify** is host policy, not protocol. A host **SHOULD** re-verify
+held frames at turn boundaries once they are older than the freshness window it
+is willing to tolerate. This is deliberately informative: `verify_frames` holds
+no state, caches no frames, and tracks no turns — the protocol's job is to
+answer the question when asked, not to decide when to ask it.
+
+Note the ordering payoff: because only *evicted* frames change the composed
+context, a turn in which everything verifies `valid` leaves §1's canonical
+rendering byte-identical, so the prompt prefix — and its cache — survives. Only
+a real change breaks the prefix, which is exactly when it *should* break.
+
+### Verify vs subscribe (for the 1.0 freeze)
+
+[#6](https://github.com/macanderson/context-graph-protocol/issues/6)'s
+`subscribe` and this section's `verify` answer the same question — *is it still
+true?* — from opposite directions, and the freeze can keep both, either, or
+one:
+
+| | `subscribe` (push, #6) | `verify` (pull, §4) |
+| - | ---------------------- | ------------------- |
+| Who initiates | Provider, when a source changes | Host, when it wants to reuse |
+| Transport need | A long-lived channel | Any request/response round trip |
+| Provider must | Watch its sources | Compare a digest on demand |
+| Latency to detect | Immediate | At the host's next check |
+| Cost shape | Idle connection + change events | One small round trip per check |
+| Fits | Stateful local indexers, file watchers | Stateless HTTP, batch indexes, serverless |
+
+They are **complementary, not alternatives**, and the capability flags are
+independent: a provider may advertise either, both, or neither. Neither
+subsumes the other — push has no answer for a host that reconnects and wants to
+know whether what it cached is still good, and pull has no answer for a host
+that needs to know *within milliseconds*. A provider advertising both gives a
+host immediate invalidation plus a way to re-establish trust after any gap in
+the channel.
+
+Because both are capability-gated and default to `false`, the freeze can ship
+`verify` without `subscribe` (this section), `subscribe` without `verify`, or
+both, with no flag day either way — a host degrades to re-query whenever the
+mechanism it wants is absent.
+
+### Conformance (§4)
+
+| # | Requirement | Enforced / verified by |
+| - | ----------- | ---------------------- |
+| V1 | A provider advertising `verify` **MUST** answer honestly by comparing digests: `valid` for a frame whose presented digest matches what it currently serves, `stale` when it differs on a frame it still serves. It **MUST NOT** answer `valid` for content bytes it is not serving. | `verify-honesty` conformance check (asks twice about just-served frames — real digests, then mutated); `--misbehave rubber-stamp-verify` and `hollow-verify` fixture modes prove it bites both ways |
+| V2 | A host **MUST** keep reusing a held frame only on an explicit `valid`; `stale`, `gone`, `unknown`, and a missing verdict all evict it. | `Verdict::permits_reuse`; `Host::verify_frames` default-deny partition; host eviction tests |
+| V3 | A host **MUST NOT** send `context/verify` to a provider that does not advertise `capabilities.verify`, and **MUST** fall back to re-querying those frames. | `Host::verify_frames` capability gate; `ContextProvider::verify` default; host fallback test |
+| V4 | Neither a verify request nor its response **MAY** carry frame bodies; a `stale` verdict carries at most a replacement **digest**. | `VerifyRequest`/`VerifyResponse` shapes; `verify_wire` no-bodies test asserted against the serialized envelope |
