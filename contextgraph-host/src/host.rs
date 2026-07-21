@@ -1,5 +1,5 @@
 //! The [`Host`] — one uniform handle over every provider, and the fan-out
-//! router (`06-context-protocol.md` §2.3, §3.3; `02-architecture.md` §7).
+//! router (`SPEC.md` §2.3, §3.3; `SPEC.md` §7).
 //!
 //! The host does the four jobs providers never do (§7): routes a query to
 //! capability-matching providers, gates consent so nothing reaches an
@@ -63,7 +63,7 @@ impl Host {
     }
 
     /// Spawn and register a child-process provider over stdio, completing the
-    /// handshake (`06-context-protocol.md` §3.2).
+    /// handshake (`SPEC.md` §3 (handshake)).
     pub async fn add_stdio(
         &mut self,
         id: impl Into<String>,

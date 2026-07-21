@@ -6,12 +6,12 @@
 //! budgets and cites what comes back, and gates what may leave the machine.
 //! This crate is that host runtime: today it is exercised by the Context Graph Protocol
 //! conformance suite and drives the `contextgraph-inspect` tool, and it is usable by
-//! any Rust agent that wants Context Graph Protocol support (`02-architecture.md` §2). Note that
+//! any Rust agent that wants Context Graph Protocol support (`SPEC.md` §1). Note that
 //! the in-tree context providers do **not** yet route through this host —
 //! they share `contextgraph-types` values via in-process calls — so this is the host
 //! runtime and conformance harness for the protocol, not (yet) the path every
 //! built-in source is served through.
-//! `docs/specs/stella-rust-cli/06-context-protocol.md` is the normative
+//! `SPEC.md` is the normative
 //! specification; every module cites the section it implements.
 //!
 //! # Shape
@@ -29,7 +29,7 @@
 //!   [`Host::query_all`] fans a query out concurrently, enforcing timeouts,
 //!   consent, and budget honesty (§2.3, §7).
 //!
-//! # Isolation invariants (`06-context-protocol.md` §3.5)
+//! # Isolation invariants (`SPEC.md` §4 (consent) and §10 (robustness))
 //!
 //! What is enforced today: a stdio child is spawned with a **scrubbed
 //! environment** (`env_clear` plus a `PATH`/`HOME` allowlist), so it inherits
@@ -66,5 +66,5 @@ pub use stdio::{RawStdioConnection, StdioProvider};
 pub use wire::{Envelope, decode_line, encode_line, envelope_kind, versions_compatible};
 
 /// The Context Graph Protocol protocol version this host speaks, re-exported from `contextgraph-types`
-/// (`06-context-protocol.md` §3).
+/// (`SPEC.md`).
 pub use contextgraph_types::PROTOCOL_VERSION;

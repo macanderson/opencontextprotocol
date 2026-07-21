@@ -6,7 +6,7 @@
 //! needs: capability negotiation (cached from the handshake, §3.2) and
 //! `context/query` (§3.3). `stella-context` and any other Rust agent drive
 //! all three provider kinds through this single interface
-//! (`02-architecture.md` §2 — "usable by any other Rust agent that wants Context Graph Protocol
+//! (`SPEC.md` §1 — "usable by any other Rust agent that wants Context Graph Protocol
 //! support").
 
 use async_trait::async_trait;
@@ -21,7 +21,7 @@ use crate::error::HostError;
 #[async_trait]
 pub trait ContextProvider: Send + Sync {
     /// The provider's host-facing id — its routing key and its consent key
-    /// (`06-context-protocol.md` §3.5).
+    /// (`SPEC.md` §4 (consent) and §10 (robustness)).
     fn id(&self) -> &str;
 
     /// Identity + declared data-flow direction, surfaced at consent time

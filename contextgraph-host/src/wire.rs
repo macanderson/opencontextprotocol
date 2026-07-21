@@ -47,7 +47,7 @@ use crate::error::HostError;
 
 /// One Context Graph Protocol message. Every variant is a small, versioned, `type`-tagged JSON
 /// object; the host writes exactly one per line (NDJSON) over stdio and one
-/// per HTTP body (`06-context-protocol.md` §3.1-§3.3).
+/// per HTTP body (`SPEC.md` §2 (transport bindings)).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Envelope {
@@ -197,7 +197,7 @@ pub fn decode_line(line: &str) -> Result<Envelope, HostError> {
 /// family** — the substring up to the first `.`. So `contextgraph/1.0-draft` and
 /// `contextgraph/1.0` interoperate (both `contextgraph/1`), while `contextgraph/2.0` does not. This is
 /// what lets the public v1.0 freeze drop the `-draft` suffix without a flag
-/// day (`06-context-protocol.md` §3).
+/// day (`SPEC.md`).
 pub fn versions_compatible(a: &str, b: &str) -> bool {
     protocol_family(a) == protocol_family(b)
 }

@@ -1,5 +1,5 @@
 //! `contextgraph-conformance` — the public Context Graph Protocol conformance suite
-//! (`06-context-protocol.md` §3.6).
+//! (`SPEC.md` §11 (conformance)).
 //!
 //! "Context Graph Protocol conformant" means *green on this suite for your declared capability
 //! set* — a checkable claim, which is what makes third-party adoption safe.

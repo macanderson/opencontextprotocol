@@ -1,6 +1,6 @@
 //! Full stdio round-trip against the real `contextgraph-example-docs` fixture,
 //! exercising `contextgraph-host`'s `Host` + `StdioProvider` end-to-end (the external
-//! child-process path, `06-context-protocol.md` §3.2), and the
+//! child-process path, `SPEC.md` §3 (handshake)), and the
 //! crash-consistency guarantee: a crashing child never poisons a healthy
 //! sibling in a fan-out (task deliverable 5).
 

@@ -1,5 +1,5 @@
-//! Consent gating for egress providers (`06-context-protocol.md` §3.5;
-//! `02-architecture.md` §7 point 4).
+//! Consent gating for egress providers (`SPEC.md` §4 (consent) and §10 (robustness);
+//! `SPEC.md` §7 point 4).
 //!
 //! The security-critical rule: a provider that declares `egress` — anything
 //! that could send workspace content off the local machine — MUST NOT be

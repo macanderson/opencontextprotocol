@@ -1,5 +1,5 @@
 //! Stdio transport: a child-process Context Graph Protocol provider spoken to over its
-//! stdin/stdout (`06-context-protocol.md` §3.2 "local providers: child
+//! stdin/stdout (`SPEC.md` §3 (handshake) "local providers: child
 //! processes over stdio").
 //!
 //! Two layers:
@@ -13,7 +13,7 @@
 //!   handshakes once, caches the provider's identity + capabilities, and
 //!   serves queries as one request/response round-trip apiece.
 //!
-//! ## Isolation (`06-context-protocol.md` §3.5, `02-architecture.md` §7)
+//! ## Isolation (`SPEC.md` §4 (consent) and §10 (robustness), `SPEC.md` §7)
 //!
 //! The child is spawned with a **scrubbed environment** — `env_clear()` then
 //! an allowlist of only `PATH` (so the program resolves) and `HOME`. No
@@ -103,7 +103,7 @@ impl RawStdioConnection {
             // SAFETY: `setsid` is async-signal-safe and only reparents the
             // child's own process-group membership in the window between fork
             // and exec — the same narrowly-scoped OS-boundary use
-            // `stella-tools`' bash tool makes (`02-architecture.md` §1.2).
+            // `stella-tools`' bash tool makes (`SPEC.md` §1.2).
             unsafe {
                 cmd.pre_exec(|| {
                     libc::setsid();
@@ -313,7 +313,7 @@ impl RawStdioConnection {
 impl Drop for RawStdioConnection {
     fn drop(&mut self) {
         // Backstop: even if a caller forgot `shutdown`, the child tree dies
-        // with the host (`02-architecture.md` §8 — no orphaned children).
+        // with the host (`SPEC.md` §8 — no orphaned children).
         self.kill_group();
     }
 }

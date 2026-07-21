@@ -1,5 +1,5 @@
 //! `contextgraph-inspect` — an interactive Context Graph Protocol prober, analogous to MCP's inspector
-//! (`06-context-protocol.md` §3.6). Point it at a provider; it completes the
+//! (`SPEC.md` §11 (conformance)). Point it at a provider; it completes the
 //! handshake, prints the negotiated capabilities, optionally fires a test
 //! query, and runs the conformance suite — all in human-readable colored
 //! output.
@@ -18,7 +18,7 @@ use contextgraph_types::{Capabilities, ContextQuery, ProviderInfo};
 #[derive(Parser)]
 #[command(
     name = "contextgraph-inspect",
-    about = "Probe and conformance-test an Context Graph Protocol provider (06-context-protocol.md §3.6)."
+    about = "Probe and conformance-test an Context Graph Protocol provider (SPEC.md §3.6)."
 )]
 struct Cli {
     #[command(subcommand)]

@@ -1,4 +1,4 @@
-//! The typed conformance report (`06-context-protocol.md` §3.6). Each check
+//! The typed conformance report (`SPEC.md` §11 (conformance)). Each check
 //! carries a pass/fail/skip status and an evidence string, so "not
 //! conformant" always says *why*. Serde-derivable so `contextgraph-inspect --json`
 //! and CI can consume it.
