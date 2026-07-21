@@ -269,6 +269,32 @@ impl FanOut {
         self.accepted_frames().map(|f| f.token_cost as u64).sum()
     }
 
+    /// Every accepted frame paired with the id of the provider that served it
+    /// — the input to deterministic composition (`docs/context-reuse.md` §1).
+    pub fn accepted_with_provider(&self) -> impl Iterator<Item = (&str, &ContextFrame)> {
+        self.outcomes
+            .iter()
+            .filter_map(|outcome| match &outcome.result {
+                ProviderResult::Frames(result) => Some(
+                    result
+                        .frames
+                        .iter()
+                        .map(move |frame| (outcome.provider_id.as_str(), frame)),
+                ),
+                _ => None,
+            })
+            .flatten()
+    }
+
+    /// Compose every accepted frame into a byte-stable context block via the
+    /// deterministic composition contract — canonical order, relevance-free
+    /// rendering (`docs/context-reuse.md` §1). Two fan-outs over the same
+    /// frame set compose to identical bytes, so an unchanged turn extends the
+    /// provider's prompt cache instead of busting it.
+    pub fn compose(&self) -> String {
+        crate::compose::compose_context(self.accepted_with_provider())
+    }
+
     /// Providers that failed (error, timeout, or crash), with their errors.
     pub fn failures(&self) -> impl Iterator<Item = (&str, &HostError)> {
         self.outcomes
@@ -406,6 +432,7 @@ mod tests {
             kind: FrameKind::Doc,
             title: id.into(),
             content: "c".into(),
+            content_digest: None,
             uri: None,
             score: 0.5,
             token_cost: cost,
@@ -450,6 +477,37 @@ mod tests {
         assert_eq!(fanout.outcomes.len(), 2);
         assert_eq!(fanout.accepted_frames().count(), 3);
         assert_eq!(fanout.total_accepted_tokens(), 250);
+    }
+
+    #[tokio::test]
+    async fn the_host_composes_the_same_frame_set_to_identical_bytes_across_turns() {
+        // The reference host's deterministic-composition round trip
+        // (`docs/context-reuse.md` §1): the same frame set, fanned out twice,
+        // composes to byte-identical bytes — so an unchanged turn extends the
+        // provider's prompt-cache prefix instead of forfeiting it.
+        let mut host = Host::new();
+        host.register(Box::new(FakeProvider::new(
+            "prov-b",
+            false,
+            Behavior::Frames(vec![frame("f2", 100), frame("f1", 100)]),
+        )));
+        host.register(Box::new(FakeProvider::new(
+            "prov-a",
+            false,
+            Behavior::Frames(vec![frame("f3", 50)]),
+        )));
+
+        let first = host.query_all(&query()).await.compose();
+        let second = host.query_all(&query()).await.compose();
+        assert_eq!(
+            first, second,
+            "an unchanged frame set must compose to identical bytes"
+        );
+        // All three frames are present, each fenced exactly once, and the
+        // lower-sorting provider id renders first regardless of registration
+        // order.
+        assert_eq!(first.matches("<frame ").count(), 3);
+        assert!(first.find("prov-a").unwrap() < first.find("prov-b").unwrap());
     }
 
     #[tokio::test]

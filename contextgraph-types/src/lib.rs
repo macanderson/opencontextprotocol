@@ -10,10 +10,12 @@
 
 pub mod capability;
 pub mod frame;
+pub mod identity;
 pub mod query;
 
 pub use capability::{Capabilities, DataFlow, ProviderInfo};
 pub use frame::{ContextFrame, FrameKind, Provenance, Relation};
+pub use identity::{FrameId, canonical_order};
 pub use query::{ContextQuery, ContextQueryResult};
 
 /// The protocol version string this crate implements. Frozen to `contextgraph/1.0`
