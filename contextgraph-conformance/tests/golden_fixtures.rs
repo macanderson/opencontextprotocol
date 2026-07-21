@@ -5,17 +5,47 @@ use std::path::{Path, PathBuf};
 use contextgraph_conformance::check_frames;
 use contextgraph_types::{ContextFrame, ContextQuery, ContextQueryResult, PROTOCOL_VERSION};
 use serde::Deserialize;
-use serde_json::Value;
+use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
 const PROFILE: &str = "contextgraph-1.0-draft";
-const PROFILE_VERSION: &str = "1.0.0";
+const PROFILE_VERSION: &str = "1.1.0";
 const GENERATION_COMMAND: &str = "cargo test -p contextgraph-conformance --test golden_fixtures";
-const FIXTURE_FILES: [&str; 4] = [
+const FIXTURE_FILES: [&str; 5] = [
     "context-frame.missing-citation.invalid.json",
     "context-frame.valid.json",
     "context-query.valid.json",
     "normalization-vectors.json",
+    "strict-validation.invalid.json",
+];
+const FRAME_FIELDS: [&str; 14] = [
+    "id",
+    "kind",
+    "title",
+    "content",
+    "uri",
+    "score",
+    "token_cost",
+    "valid_from",
+    "valid_to",
+    "recorded_at",
+    "provenance",
+    "citation_label",
+    "embedding",
+    "relations",
+];
+const PROVENANCE_FIELDS: [&str; 6] = ["type", "uri", "range", "digest", "method", "by"];
+const EMBEDDING_FIELDS: [&str; 2] = ["fingerprint", "vector"];
+const RELATION_FIELDS: [&str; 3] = ["rel", "target_uri", "display_name"];
+const QUERY_FIELDS: [&str; 8] = [
+    "goal",
+    "query_text",
+    "embedding",
+    "kinds",
+    "anchors",
+    "max_frames",
+    "max_tokens",
+    "as_of",
 ];
 
 #[derive(Debug, Deserialize)]
@@ -29,21 +59,47 @@ struct Manifest {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FrameFixtures {
-    fully_populated: Value,
-    minimal: Value,
+struct DigestFixtures {
+    cases: Vec<DigestCase>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct QueryFixture {
-    query: Value,
+struct DigestCase {
+    name: String,
+    source: Value,
+    expected_normalized: Value,
+    expected_jcs_utf8: String,
+    sha256: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct InvalidFrameFixture {
-    frame: Value,
+struct CitationFixtures {
+    missing: Value,
+    blank: Value,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictValidationFixtures {
+    cases: Vec<StrictValidationCase>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StrictValidationCase {
+    name: String,
+    target: StrictTarget,
+    input: Value,
+    unknown_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StrictTarget {
+    Frame,
+    Query,
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,6 +164,119 @@ fn fixture_file_names(directory: &Path) -> BTreeSet<String> {
         .collect()
 }
 
+fn object<'a>(value: &'a Value, path: &str) -> Result<&'a Map<String, Value>, String> {
+    value
+        .as_object()
+        .ok_or_else(|| format!("{path} must be an object"))
+}
+
+fn reject_unknown_fields(value: &Value, allowed: &[&str], path: &str) -> Result<(), String> {
+    for key in object(value, path)?.keys() {
+        if !allowed.contains(&key.as_str()) {
+            return Err(format!("unknown field {path}.{key}"));
+        }
+    }
+    Ok(())
+}
+
+fn strict_frame(value: &Value) -> Result<ContextFrame, String> {
+    reject_unknown_fields(value, &FRAME_FIELDS, "frame")?;
+    let frame = object(value, "frame")?;
+
+    if let Some(provenance) = frame.get("provenance") {
+        let entries = provenance
+            .as_array()
+            .ok_or_else(|| "frame.provenance must be an array".to_owned())?;
+        for (index, entry) in entries.iter().enumerate() {
+            reject_unknown_fields(
+                entry,
+                &PROVENANCE_FIELDS,
+                &format!("frame.provenance[{index}]"),
+            )?;
+        }
+    }
+    if let Some(embedding) = frame.get("embedding") {
+        reject_unknown_fields(embedding, &EMBEDDING_FIELDS, "frame.embedding")?;
+    }
+    if let Some(relations) = frame.get("relations") {
+        let entries = relations
+            .as_array()
+            .ok_or_else(|| "frame.relations must be an array".to_owned())?;
+        for (index, entry) in entries.iter().enumerate() {
+            reject_unknown_fields(
+                entry,
+                &RELATION_FIELDS,
+                &format!("frame.relations[{index}]"),
+            )?;
+        }
+    }
+
+    serde_json::from_value(value.clone()).map_err(|error| format!("invalid frame: {error}"))
+}
+
+fn strict_query(value: &Value) -> Result<ContextQuery, String> {
+    reject_unknown_fields(value, &QUERY_FIELDS, "query")?;
+    serde_json::from_value(value.clone()).map_err(|error| format!("invalid query: {error}"))
+}
+
+fn normalize_frame(value: &Value) -> Result<Value, String> {
+    strict_frame(value)?;
+    let mut normalized = value.clone();
+    let frame = normalized
+        .as_object_mut()
+        .expect("strict frame validation requires an object");
+    frame
+        .entry("provenance")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    frame
+        .entry("relations")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    Ok(normalized)
+}
+
+fn normalize_query(value: &Value) -> Result<Value, String> {
+    strict_query(value)?;
+    let mut normalized = value.clone();
+    let query = normalized
+        .as_object_mut()
+        .expect("strict query validation requires an object");
+    query
+        .entry("kinds")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    query
+        .entry("anchors")
+        .or_insert_with(|| Value::Array(Vec::new()));
+    Ok(normalized)
+}
+
+fn assert_digest_case(case: &DigestCase, normalized: &Value) {
+    assert_eq!(normalized, &case.expected_normalized, "{} value", case.name);
+    let canonical = serde_json_canonicalizer::to_string(normalized)
+        .unwrap_or_else(|error| panic!("{} could not be canonicalized: {error}", case.name));
+    assert_eq!(canonical, case.expected_jcs_utf8, "{} JCS text", case.name);
+    assert_lowercase_sha256(&case.sha256);
+    assert_eq!(
+        sha256_digest(case.expected_jcs_utf8.as_bytes()),
+        case.sha256,
+        "{} JCS digest",
+        case.name
+    );
+}
+
+fn assert_rejected_citation(frame: ContextFrame, label: &str) {
+    let result = ContextQueryResult {
+        frames: vec![frame],
+        truncated: false,
+        dropped_estimate: None,
+    };
+    let (passed, evidence) = check_frames(&result);
+    assert!(!passed, "{label} citation unexpectedly passed conformance");
+    assert!(
+        evidence.contains("citation_label"),
+        "unexpected evidence for {label} citation: {evidence}"
+    );
+}
+
 #[test]
 fn manifest_has_strict_coverage_and_correct_file_hashes() {
     let directory = fixture_dir();
@@ -143,26 +312,70 @@ fn manifest_has_strict_coverage_and_correct_file_hashes() {
 }
 
 #[test]
-fn valid_frames_deserialize_and_preserve_full_and_minimal_wire_shapes() {
-    let fixtures: FrameFixtures = read_fixture("context-frame.valid.json");
-    let full: ContextFrame = serde_json::from_value(fixtures.fully_populated.clone())
-        .expect("fully populated frame must deserialize");
-    let minimal: ContextFrame =
-        serde_json::from_value(fixtures.minimal.clone()).expect("minimal frame must deserialize");
-
+fn frame_digest_cases_pin_default_materialization_jcs_and_array_order() {
+    let fixtures: DigestFixtures = read_fixture("context-frame.valid.json");
+    let names: BTreeSet<_> = fixtures
+        .cases
+        .iter()
+        .map(|case| case.name.as_str())
+        .collect();
     assert_eq!(
-        serde_json::to_value(&full).unwrap(),
-        fixtures.fully_populated
+        names,
+        BTreeSet::from(["fully_populated_frame", "minimal_frame"])
     );
-    assert_eq!(serde_json::to_value(&minimal).unwrap(), fixtures.minimal);
-    assert_eq!(full.provenance.len(), 1);
-    assert_eq!(full.relations.len(), 1);
-    assert!(full.embedding.is_some());
-    assert!(minimal.provenance.is_empty());
-    assert!(minimal.relations.is_empty());
+
+    let mut frames = Vec::new();
+    for case in &fixtures.cases {
+        let frame = strict_frame(&case.source)
+            .unwrap_or_else(|error| panic!("{} source was rejected: {error}", case.name));
+        assert_eq!(serde_json::to_value(&frame).unwrap(), case.source);
+        let normalized = normalize_frame(&case.source).unwrap();
+        assert_digest_case(case, &normalized);
+        frames.push(frame);
+    }
+
+    let full = fixtures
+        .cases
+        .iter()
+        .find(|case| case.name == "fully_populated_frame")
+        .unwrap();
+    for field in ["provenance", "relations"] {
+        assert_eq!(
+            full.source.get(field),
+            full.expected_normalized.get(field),
+            "{field} order changed"
+        );
+    }
+    assert_eq!(
+        full.source.pointer("/embedding/vector"),
+        full.expected_normalized.pointer("/embedding/vector"),
+        "embedding vector order changed"
+    );
+
+    let minimal = fixtures
+        .cases
+        .iter()
+        .find(|case| case.name == "minimal_frame")
+        .unwrap();
+    assert!(minimal.source.get("provenance").is_none());
+    assert!(minimal.source.get("relations").is_none());
+    assert_eq!(
+        minimal.expected_normalized["provenance"],
+        Value::Array(vec![])
+    );
+    assert_eq!(
+        minimal.expected_normalized["relations"],
+        Value::Array(vec![])
+    );
+    for optional in ["uri", "valid_from", "valid_to", "recorded_at", "embedding"] {
+        assert!(
+            minimal.expected_normalized.get(optional).is_none(),
+            "optional scalar {optional} must remain absent"
+        );
+    }
 
     let result = ContextQueryResult {
-        frames: vec![full, minimal],
+        frames,
         truncated: false,
         dropped_estimate: None,
     };
@@ -171,33 +384,93 @@ fn valid_frames_deserialize_and_preserve_full_and_minimal_wire_shapes() {
 }
 
 #[test]
-fn query_omitted_arrays_deserialize_to_defaults_and_stay_omitted() {
-    let fixture: QueryFixture = read_fixture("context-query.valid.json");
-    let query: ContextQuery =
-        serde_json::from_value(fixture.query.clone()).expect("valid query must deserialize");
+fn query_digest_case_pins_default_materialization_and_jcs() {
+    let fixtures: DigestFixtures = read_fixture("context-query.valid.json");
+    assert_eq!(fixtures.cases.len(), 1);
+    let case = &fixtures.cases[0];
+    assert_eq!(case.name, "minimal_query");
 
+    let query = strict_query(&case.source).expect("minimal query source must deserialize");
     assert!(query.kinds.is_empty());
     assert!(query.anchors.is_empty());
-    assert_eq!(serde_json::to_value(&query).unwrap(), fixture.query);
+    assert_eq!(serde_json::to_value(&query).unwrap(), case.source);
+
+    let normalized = normalize_query(&case.source).unwrap();
+    assert_digest_case(case, &normalized);
+    assert!(case.source.get("kinds").is_none());
+    assert!(case.source.get("anchors").is_none());
+    assert_eq!(case.expected_normalized["kinds"], Value::Array(vec![]));
+    assert_eq!(case.expected_normalized["anchors"], Value::Array(vec![]));
+    for optional in ["query_text", "embedding", "as_of"] {
+        assert!(
+            case.expected_normalized.get(optional).is_none(),
+            "optional scalar {optional} must remain absent"
+        );
+    }
+}
+
+#[test]
+fn pinned_profile_rejects_all_published_unknown_field_cases() {
+    let fixtures: StrictValidationFixtures = read_fixture("strict-validation.invalid.json");
+    let names: BTreeSet<_> = fixtures
+        .cases
+        .iter()
+        .map(|case| case.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        BTreeSet::from([
+            "frame_embedding_unknown",
+            "frame_provenance_unknown",
+            "frame_relation_unknown",
+            "frame_top_level_unknown",
+            "query_top_level_unknown",
+        ])
+    );
+
+    for case in fixtures.cases {
+        let error = match case.target {
+            StrictTarget::Frame => {
+                serde_json::from_value::<ContextFrame>(case.input.clone()).unwrap_or_else(
+                    |error| {
+                        panic!(
+                            "{} must remain valid for the general protocol: {error}",
+                            case.name
+                        )
+                    },
+                );
+                strict_frame(&case.input).expect_err("pinned frame profile accepted unknown field")
+            }
+            StrictTarget::Query => {
+                serde_json::from_value::<ContextQuery>(case.input.clone()).unwrap_or_else(
+                    |error| {
+                        panic!(
+                            "{} must remain valid for the general protocol: {error}",
+                            case.name
+                        )
+                    },
+                );
+                strict_query(&case.input).expect_err("pinned query profile accepted unknown field")
+            }
+        };
+        assert_eq!(error, format!("unknown field {}", case.unknown_path));
+    }
+}
+
+#[test]
+fn missing_citation_fixture_is_rejected_by_frame_conformance() {
+    let fixtures: CitationFixtures = read_fixture("context-frame.missing-citation.invalid.json");
+    let frame = strict_frame(&fixtures.missing).expect("missing citation fixture must match shape");
+    assert!(frame.citation_label.is_none());
+    assert_rejected_citation(frame, "missing");
 }
 
 #[test]
 fn blank_citation_fixture_is_rejected_by_frame_conformance() {
-    let fixture: InvalidFrameFixture = read_fixture("context-frame.missing-citation.invalid.json");
-    let frame: ContextFrame =
-        serde_json::from_value(fixture.frame).expect("invalid fixture must still match wire shape");
-    let result = ContextQueryResult {
-        frames: vec![frame],
-        truncated: false,
-        dropped_estimate: None,
-    };
-
-    let (passed, evidence) = check_frames(&result);
-    assert!(!passed, "blank citation unexpectedly passed conformance");
-    assert!(
-        evidence.contains("citation_label"),
-        "unexpected evidence: {evidence}"
-    );
+    let fixtures: CitationFixtures = read_fixture("context-frame.missing-citation.invalid.json");
+    let frame = strict_frame(&fixtures.blank).expect("blank citation fixture must match shape");
+    assert!(frame.citation_label.as_deref().unwrap().trim().is_empty());
+    assert_rejected_citation(frame, "blank");
 }
 
 #[test]
@@ -208,7 +481,10 @@ fn normalization_vectors_match_rfc_8785_text_and_sha256() {
         .iter()
         .map(|vector| vector.name.as_str())
         .collect();
-    assert_eq!(names, BTreeSet::from(["escaping", "numbers", "unicode"]));
+    assert_eq!(
+        names,
+        BTreeSet::from(["escaping", "number_boundaries", "numbers", "unicode"])
+    );
 
     for vector in fixtures.vectors {
         let input: Value = serde_json::from_str(&vector.input_json)

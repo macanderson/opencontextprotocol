@@ -1,8 +1,16 @@
 {
-  "frame": {
+  "missing": {
+    "id": "frame:invalid:missing-citation",
+    "kind": "snippet",
+    "title": "Missing citation label",
+    "content": "The citation_label property is absent.",
+    "score": 0.5,
+    "token_cost": 9
+  },
+  "blank": {
     "id": "frame:invalid:blank-citation",
     "kind": "snippet",
-    "title": "Wire-valid but conformance-invalid frame",
+    "title": "Blank citation label",
     "content": "The citation label contains only whitespace.",
     "score": 0.5,
     "token_cost": 9,
