@@ -355,7 +355,6 @@ mod tests {
                 capabilities: Capabilities {
                     query: QueryCapability {
                         kinds: vec!["doc".into()],
-                        filters: vec![],
                     },
                     ..Capabilities::default()
                 },

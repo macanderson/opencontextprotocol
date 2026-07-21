@@ -175,13 +175,10 @@ fn print_capabilities(info: &ProviderInfo, caps: &Capabilities) {
     }
 
     println!(
-        "  {} kinds={:?} filters={:?} upsert={} graph={} subscribe={}",
+        "  {} kinds={:?} graph={}",
         "capabilities".bold(),
         caps.query.kinds,
-        caps.query.filters,
-        caps.upsert,
-        caps.graph,
-        caps.subscribe
+        caps.graph
     );
     if let Some(fingerprint) = &caps.embeddings_fingerprint {
         println!("  {} {fingerprint}", "embedder".bold());

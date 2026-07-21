@@ -125,7 +125,6 @@ impl ContextProvider for HealthyProvider {
         CAPS.get_or_init(|| Capabilities {
             query: QueryCapability {
                 kinds: vec!["doc".into()],
-                filters: vec![],
             },
             ..Capabilities::default()
         })

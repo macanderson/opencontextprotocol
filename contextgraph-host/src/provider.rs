@@ -86,7 +86,6 @@ mod tests {
         Capabilities {
             query: QueryCapability {
                 kinds: kinds.iter().map(|k| k.to_string()).collect(),
-                filters: vec![],
             },
             ..Capabilities::default()
         }

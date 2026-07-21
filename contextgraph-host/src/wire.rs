@@ -1,24 +1,46 @@
-//! The Context Graph Protocol wire envelope and its framing.
+//! The CGP wire envelope and its framing (`SPEC.md` §Transport bindings).
 //!
-//! `06-context-protocol.md` §1/§3.1 states Context Graph Protocol "rides MCP's transport and
-//! lifecycle conventions (JSON-RPC 2.0, stdio + streamable HTTP,
-//! initialize/capabilities handshake)". The spec leaves the concrete
-//! reference-host framing to the binding; this host frames every message as
-//! **newline-delimited JSON (NDJSON) — exactly one `serde_json` value per
-//! line** — because it is the simplest thing that is unambiguous over a pipe
-//! and trivially reimplementable in the TS/Python provider kits
-//! (`06-context-protocol.md` §3.6). The `type`-tagged variants below are the
-//! Context Graph Protocol method vocabulary the spec calls "the delta": `handshake` ↔
-//! `initialize`, `query` ↔ `context/query`, `frames` ↔ its response,
-//! `shutdown` ↔ lifecycle teardown (§3.2, §3.3). HTTP providers receive the
-//! same envelope as a JSON request body and reply with one as the response
-//! body (§3.2 "streamable HTTP").
+//! # This is not JSON-RPC
 //!
-//! The envelope is **versioned**: the handshake exchange negotiates the
-//! protocol family up front (§3.2), and a mismatch is a named error, never a
-//! hang.
+//! Earlier revisions of this module claimed CGP "rides MCP's transport and
+//! lifecycle conventions (JSON-RPC 2.0, ...)". That was not true of the wire it
+//! described, and the claim has been withdrawn — see
+//! [ADR 0002](../../docs/adr/0002-request-correlation-and-the-json-rpc-question.md).
+//! CGP's envelope is a bespoke `type`-tagged JSON object: there is no
+//! `jsonrpc` member, no `method`/`params` split. Its *lifecycle* is informed by
+//! MCP (a handshake that negotiates version and capabilities before any
+//! payload moves), but the framing is its own.
+//!
+//! A JSON-RPC **binding** — an alternate encoding of this same semantic layer —
+//! may be specified later without touching frame or query semantics and without
+//! a new protocol family. Keeping the semantic layer and the transport binding
+//! separate is what makes that possible.
+//!
+//! # Framing
+//!
+//! Every message is **newline-delimited JSON (NDJSON): exactly one
+//! `serde_json` value per line** — the simplest thing that is unambiguous over
+//! a pipe and trivially reimplementable in a provider kit in any language. HTTP
+//! providers receive the same envelope as a JSON request body and reply with
+//! one as the response body.
+//!
+//! The envelope is **versioned**: the handshake negotiates the protocol family
+//! up front, and a mismatch is a named error, never a hang (`SPEC.md` §H3).
+//!
+//! # Correlation
+//!
+//! `query`, `frames`, and `error` carry an optional [`id`](Envelope). A
+//! provider **MUST** echo the `id` of the request it is answering. An envelope
+//! with no `id` is a *notification*: it expects no reply, which is the shape a
+//! future push-invalidation extension needs
+//! (`docs/sketches/push-invalidation.md`).
+//!
+//! `id` is optional so that a provider written against an earlier revision
+//! stays conformant: a host that has not seen a provider echo an `id` **MUST**
+//! fall back to lock-step. Concurrency is negotiated by observation, not by a
+//! capability flag.
 
-use contextgraph_types::{Capabilities, ContextQuery, ContextQueryResult, ProviderInfo};
+use contextgraph_types::{Capabilities, ContextQuery, ContextQueryResult, ErrorCode, ProviderInfo};
 use serde::{Deserialize, Serialize};
 
 use crate::error::HostError;
@@ -40,16 +62,70 @@ pub enum Envelope {
         provider: ProviderInfo,
         capabilities: Capabilities,
     },
-    /// Host → provider retrieval request (§3.3 `context/query`).
-    Query { query: ContextQuery },
-    /// Provider → host budgeted, provenance-carrying frames (§3.3 response).
-    Frames { result: ContextQueryResult },
-    /// Lifecycle teardown; the provider should exit cleanly (§3.2).
+    /// Host → provider retrieval request (`context/query`).
+    Query {
+        /// Correlation id. A provider **MUST** echo it on the reply.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        query: ContextQuery,
+    },
+    /// Provider → host budgeted, provenance-carrying frames.
+    Frames {
+        /// The `id` of the `query` this answers, echoed verbatim.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        result: ContextQueryResult,
+    },
+    /// Lifecycle teardown; the provider should exit cleanly.
     Shutdown,
     /// Provider-reported failure — lets a provider report a bad request
-    /// without dying (§3.5 "fail loud"). The host maps this to
+    /// without dying (`SPEC.md` §R1 "fail loud"). The host maps this to
     /// [`HostError::Provider`].
-    Error { message: String },
+    Error {
+        /// The `id` of the request that failed, when the failure is
+        /// attributable to one.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        /// Machine-readable classification (`SPEC.md` §Errors). Optional so
+        /// that a provider written against an earlier revision stays
+        /// conformant; a host treats its absence as
+        /// [`ErrorCode::Internal`](contextgraph_types::ErrorCode::Internal).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<ErrorCode>,
+        /// Human-readable detail. Always present: the code is for the machine,
+        /// the message is for whoever reads the log.
+        message: String,
+    },
+}
+
+impl Envelope {
+    /// The correlation id this envelope carries, if any.
+    ///
+    /// `None` means one of two things, and the caller can tell them apart from
+    /// context: either the envelope is a lifecycle message that never carries
+    /// one (`handshake`, `shutdown`), or the peer does not implement
+    /// correlation and the exchange must stay lock-step.
+    pub fn correlation_id(&self) -> Option<&str> {
+        match self {
+            Envelope::Query { id, .. }
+            | Envelope::Frames { id, .. }
+            | Envelope::Error { id, .. } => id.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// The error code carried by an `error` envelope, defaulting to
+    /// [`ErrorCode::Internal`] when the provider declared none.
+    ///
+    /// Defaulting to `Internal` rather than to something retryable is the
+    /// conservative reading: a host must not infer "safe to retry" from a
+    /// provider's silence.
+    pub fn error_code(&self) -> Option<ErrorCode> {
+        match self {
+            Envelope::Error { code, .. } => Some(code.clone().unwrap_or(ErrorCode::Internal)),
+            _ => None,
+        }
+    }
 }
 
 /// The human name of an envelope variant, for error messages that report
@@ -116,7 +192,6 @@ mod tests {
             capabilities: Capabilities {
                 query: QueryCapability {
                     kinds: vec!["doc".into()],
-                    filters: vec![],
                 },
                 ..Capabilities::default()
             },
@@ -135,6 +210,7 @@ mod tests {
             },
             sample_ack(),
             Envelope::Query {
+                id: None,
                 query: ContextQuery {
                     goal: "g".into(),
                     query_text: None,
@@ -147,6 +223,7 @@ mod tests {
                 },
             },
             Envelope::Frames {
+                id: None,
                 result: ContextQueryResult {
                     frames: vec![],
                     truncated: false,
@@ -155,6 +232,8 @@ mod tests {
             },
             Envelope::Shutdown,
             Envelope::Error {
+                id: None,
+                code: None,
                 message: "m".into(),
             },
         ];
@@ -192,11 +271,12 @@ mod tests {
             as_of: None,
         };
         let env = Envelope::Query {
+            id: None,
             query: query.clone(),
         };
         let line = encode_line(&env).unwrap();
         match decode_line(&line).unwrap() {
-            Envelope::Query { query: back } => assert_eq!(back, query),
+            Envelope::Query { query: back, .. } => assert_eq!(back, query),
             other => panic!("expected query, got {}", envelope_kind(&other)),
         }
     }

@@ -365,12 +365,13 @@ impl ContextProvider for StdioProvider {
     async fn query(&self, query: &ContextQuery) -> Result<ContextQueryResult, HostError> {
         let mut conn = self.conn.lock().await;
         conn.send(&Envelope::Query {
+            id: None,
             query: query.clone(),
         })
         .await?;
         match conn.recv().await? {
-            Envelope::Frames { result } => Ok(result),
-            Envelope::Error { message } => Err(HostError::Provider {
+            Envelope::Frames { result, .. } => Ok(result),
+            Envelope::Error { message, .. } => Err(HostError::Provider {
                 id: self.id.clone(),
                 message,
             }),
@@ -419,7 +420,6 @@ mod tests {
             capabilities: Capabilities {
                 query: contextgraph_types::capability::QueryCapability {
                     kinds: vec!["doc".into()],
-                    filters: vec![],
                 },
                 ..Capabilities::default()
             },
@@ -445,6 +445,7 @@ mod tests {
             relations: vec![],
         };
         let env = Envelope::Frames {
+            id: None,
             result: ContextQueryResult {
                 frames: vec![frame],
                 truncated: false,

@@ -103,6 +103,7 @@ fn main() {
                 write_envelope(
                     &mut stdout,
                     &Envelope::Frames {
+                        id: None,
                         result: ContextQueryResult {
                             frames: canned_frames(args.misbehave),
                             truncated: false,
@@ -145,12 +146,9 @@ fn capabilities() -> Capabilities {
     Capabilities {
         query: QueryCapability {
             kinds: vec!["doc".into(), "snippet".into()],
-            filters: vec!["path".into()],
         },
-        upsert: false,
         graph: false,
         embeddings_fingerprint: None,
-        subscribe: false,
     }
 }
 

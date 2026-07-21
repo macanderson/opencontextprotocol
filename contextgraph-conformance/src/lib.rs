@@ -260,6 +260,7 @@ async fn malformed_stdio_probe(program: &str, args: &[String]) -> CheckResult {
     }
     if let Err(error) = conn
         .send(&contextgraph_host::Envelope::Query {
+            id: None,
             query: sample_query(),
         })
         .await
@@ -274,7 +275,7 @@ async fn malformed_stdio_probe(program: &str, args: &[String]) -> CheckResult {
             CHECK_MALFORMED,
             "provider ignored a malformed line and still answered a valid query",
         ),
-        Ok(contextgraph_host::Envelope::Error { message }) => CheckResult::pass(
+        Ok(contextgraph_host::Envelope::Error { message, .. }) => CheckResult::pass(
             CHECK_MALFORMED,
             format!("provider errored cleanly on malformed input and stayed alive: {message}"),
         ),
@@ -353,14 +354,13 @@ pub fn check_frames(result: &ContextQueryResult) -> (bool, String) {
 
 fn describe_handshake(info: &ProviderInfo, caps: &Capabilities) -> String {
     format!(
-        "provider '{}' v{} — data-flow reads={} writes={} egress={}; query kinds={:?}, upsert={}, graph={}",
+        "provider '{}' v{} — data-flow reads={} writes={} egress={}; query kinds={:?}, graph={}",
         info.name,
         info.version,
         info.data_flow.reads,
         info.data_flow.writes,
         info.data_flow.egress,
         caps.query.kinds,
-        caps.upsert,
         caps.graph,
     )
 }

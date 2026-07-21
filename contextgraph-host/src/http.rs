@@ -151,14 +151,15 @@ impl ContextProvider for HttpProvider {
             &self.client,
             &self.url,
             &Envelope::Query {
+                id: None,
                 query: query.clone(),
             },
             &self.id,
         )
         .await?;
         match reply {
-            Envelope::Frames { result } => Ok(result),
-            Envelope::Error { message } => Err(HostError::Provider {
+            Envelope::Frames { result, .. } => Ok(result),
+            Envelope::Error { message, .. } => Err(HostError::Provider {
                 id: self.id.clone(),
                 message,
             }),
@@ -200,7 +201,6 @@ mod tests {
             capabilities: Capabilities {
                 query: QueryCapability {
                     kinds: vec!["doc".into()],
-                    filters: vec![],
                 },
                 ..Capabilities::default()
             },
@@ -210,6 +210,7 @@ mod tests {
 
     fn frames_body() -> serde_json::Value {
         serde_json::to_value(Envelope::Frames {
+            id: None,
             result: ContextQueryResult {
                 frames: vec![ContextFrame {
                     id: "frm_h".into(),
@@ -258,6 +259,8 @@ mod tests {
                     Ok(Envelope::Handshake { .. }) => ack_body(PROTOCOL_VERSION),
                     Ok(Envelope::Query { .. }) => frames_body(),
                     _ => serde_json::to_value(Envelope::Error {
+                        id: None,
+                        code: None,
                         message: "unexpected request".into(),
                     })
                     .unwrap(),
@@ -331,7 +334,6 @@ mod tests {
             capabilities: Capabilities {
                 query: QueryCapability {
                     kinds: vec!["doc".into()],
-                    filters: vec![],
                 },
                 ..Capabilities::default()
             },
