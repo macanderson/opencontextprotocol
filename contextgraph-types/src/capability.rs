@@ -54,6 +54,17 @@ pub struct ProviderInfo {
 pub struct Capabilities {
     #[serde(default)]
     pub query: QueryCapability,
+    /// The provider echoes the `id` of a request on its reply, so a host may
+    /// pipeline concurrent exchanges over one connection (`SPEC.md` §H4).
+    ///
+    /// Negotiated explicitly rather than discovered by observation. A host that
+    /// sent an `id` speculatively could not tell a provider that does not
+    /// implement correlation from one that implements it incorrectly, which
+    /// makes the guarantee uncheckable — and an uncheckable guarantee is the
+    /// thing this protocol exists to avoid. A provider that does not declare it
+    /// is queried in lock-step and stays fully conformant.
+    #[serde(default)]
+    pub correlation: bool,
     /// The provider serves [`FrameKind::Graph`](crate::FrameKind::Graph) frames
     /// and populates [`Relation`](crate::Relation) edges. Gates the graph
     /// conformance checks (`SPEC.md` §G1–G3).
@@ -136,6 +147,7 @@ mod tests {
             query: QueryCapability {
                 kinds: vec!["snippet".into()],
             },
+            correlation: true,
             graph: true,
             embeddings_fingerprint: Some("bge-small-en-v1.5/384/l2".into()),
         };

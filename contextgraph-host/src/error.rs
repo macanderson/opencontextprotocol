@@ -65,6 +65,20 @@ pub enum HostError {
         got: String,
     },
 
+    /// A provider that declared `correlation` answered without echoing the
+    /// request's `id`, or echoed the wrong one (`SPEC.md` §H4).
+    ///
+    /// Fatal to the exchange rather than a warning: once replies cannot be
+    /// matched to requests, a pipelining host could hand one caller's frames to
+    /// another, and silently mixing evidence between tasks is worse than
+    /// failing the query.
+    #[error("provider {id} broke request correlation: expected id `{expected}`, got `{got}`")]
+    CorrelationMismatch {
+        id: String,
+        expected: String,
+        got: String,
+    },
+
     /// No provider is registered under the given id.
     #[error("no provider registered with id `{0}`")]
     UnknownProvider(String),

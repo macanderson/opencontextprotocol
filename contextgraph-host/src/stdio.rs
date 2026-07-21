@@ -35,7 +35,10 @@ use tokio::sync::Mutex as TokioMutex;
 
 use crate::error::HostError;
 use crate::provider::ContextProvider;
-use crate::wire::{Envelope, decode_line, encode_line, envelope_kind, versions_compatible};
+use crate::wire::{
+    Envelope, decode_line, encode_line, envelope_kind, next_correlation_id, verify_correlation,
+    versions_compatible,
+};
 
 /// How long the handshake waits for a provider's ack before giving up —
 /// bounds the "version mismatch = never a hang" guarantee even against a
@@ -364,13 +367,17 @@ impl ContextProvider for StdioProvider {
 
     async fn query(&self, query: &ContextQuery) -> Result<ContextQueryResult, HostError> {
         let mut conn = self.conn.lock().await;
+        let sent_id = self.capabilities.correlation.then(next_correlation_id);
         conn.send(&Envelope::Query {
-            id: None,
+            id: sent_id.clone(),
             query: query.clone(),
         })
         .await?;
         match conn.recv().await? {
-            Envelope::Frames { result, .. } => Ok(result),
+            Envelope::Frames { id: echoed, result } => {
+                verify_correlation(&self.id, sent_id.as_deref(), echoed.as_deref())?;
+                Ok(result)
+            }
             Envelope::Error { message, .. } => Err(HostError::Provider {
                 id: self.id.clone(),
                 message,

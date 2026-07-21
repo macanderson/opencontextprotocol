@@ -77,12 +77,35 @@ The reasoning, in the order it actually weighed:
   correspondingly a reply carrying no `id` cannot be correlated. `handshake` /
   `handshake_ack` / `shutdown` remain valid without one, which preserves every
   byte of the existing wire.
-- A provider that does not implement correlation simply omits `id`. A host
-  **MUST** fall back to lock-step for such a provider — this is precisely why
-  the field is optional, and it is what keeps already-deployed providers
-  conformant.
-- Concurrency is therefore **negotiated by observation**, not by a capability
-  flag: a host may pipeline as soon as it has seen a provider echo an `id`.
+- Correlation is **negotiated explicitly** via `Capabilities.correlation`. A
+  host sends an `id` only to a provider that declared support; for any other
+  provider it stays lock-step, so already-deployed providers remain conformant.
+- A provider that declared `correlation` and then answers with a missing or
+  mismatched `id` is a conformance failure
+  ([`HostError::CorrelationMismatch`]), not a warning. Once replies cannot be
+  matched to requests, a pipelining host could hand one caller's frames to
+  another, and silently mixing evidence between tasks is worse than failing the
+  query.
+
+> **Amendment (2026-07-21, during implementation).** This ADR originally
+> specified that concurrency would be "negotiated by observation" — the host
+> would pipeline as soon as it saw a provider echo an `id`, with no capability
+> flag. Implementing the conformance check proved that wrong. With observation
+> alone, a reply carrying no `id` is ambiguous: it may mean *this provider does
+> not implement correlation* or *this provider implements it incorrectly*, and
+> nothing on the wire distinguishes them. A guarantee whose violation is
+> indistinguishable from legitimate behaviour cannot be checked — which is the
+> exact failure mode this protocol exists to eliminate, so shipping it would
+> have been self-refuting. `Capabilities.correlation` resolves the ambiguity and
+> costs one boolean.
+>
+> The flag is added immediately after
+> [ADR 0004](./0004-dead-capability-surface.md) removed three others, and the
+> distinction is the point: `correlation` changes host behaviour and has a
+> conformance check behind it, which is precisely the standard `upsert`,
+> `subscribe`, and `filters` failed.
+
+[`HostError::CorrelationMismatch`]: https://docs.rs/contextgraph-host
 
 ### Keeping the MCP door open
 

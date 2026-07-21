@@ -128,6 +128,44 @@ impl Envelope {
     }
 }
 
+/// Mint a fresh correlation id.
+///
+/// Ids need only be unique among the exchanges in flight on one connection; a
+/// process-wide counter satisfies that with no per-connection state and no
+/// randomness dependency. They are opaque to the provider, which must echo the
+/// string verbatim rather than parse it.
+pub fn next_correlation_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    format!("q{}", COUNTER.fetch_add(1, Ordering::Relaxed))
+}
+
+/// Check that a reply carries the correlation id of the request it answers
+/// (`SPEC.md` §H4).
+///
+/// `sent` is `None` when the provider did not declare `correlation`, in which
+/// case the exchange is lock-step and there is nothing to verify.
+pub fn verify_correlation(
+    provider_id: &str,
+    sent: Option<&str>,
+    echoed: Option<&str>,
+) -> Result<(), HostError> {
+    let Some(expected) = sent else {
+        return Ok(());
+    };
+    match echoed {
+        Some(got) if got == expected => Ok(()),
+        // A correlation-declaring provider that answers without an id, or with
+        // the wrong one, is worse than one that never declared it: a host that
+        // accepted the reply anyway could hand one caller's frames to another.
+        other => Err(HostError::CorrelationMismatch {
+            id: provider_id.to_string(),
+            expected: expected.to_string(),
+            got: other.unwrap_or("<absent>").to_string(),
+        }),
+    }
+}
+
 /// The human name of an envelope variant, for error messages that report
 /// "expected X, got Y".
 pub fn envelope_kind(env: &Envelope) -> &'static str {

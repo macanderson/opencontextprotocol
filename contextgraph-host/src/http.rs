@@ -18,7 +18,9 @@ use contextgraph_types::{
 
 use crate::error::HostError;
 use crate::provider::ContextProvider;
-use crate::wire::{Envelope, envelope_kind, versions_compatible};
+use crate::wire::{
+    Envelope, envelope_kind, next_correlation_id, verify_correlation, versions_compatible,
+};
 
 /// Total per-request budget for an HTTP exchange (handshake or query).
 const HTTP_TIMEOUT: Duration = Duration::from_secs(30);
@@ -147,18 +149,22 @@ impl ContextProvider for HttpProvider {
     }
 
     async fn query(&self, query: &ContextQuery) -> Result<ContextQueryResult, HostError> {
+        let sent_id = self.capabilities.correlation.then(next_correlation_id);
         let reply = post_envelope(
             &self.client,
             &self.url,
             &Envelope::Query {
-                id: None,
+                id: sent_id.clone(),
                 query: query.clone(),
             },
             &self.id,
         )
         .await?;
         match reply {
-            Envelope::Frames { result, .. } => Ok(result),
+            Envelope::Frames { id: echoed, result } => {
+                verify_correlation(&self.id, sent_id.as_deref(), echoed.as_deref())?;
+                Ok(result)
+            }
             Envelope::Error { message, .. } => Err(HostError::Provider {
                 id: self.id.clone(),
                 message,
