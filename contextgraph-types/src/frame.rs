@@ -278,7 +278,7 @@ mod tests {
     #[test]
     fn an_honest_frame_declares_the_canonical_cost_of_its_content() {
         let mut frame = sample_frame();
-        frame.content = "abcd".repeat(10).into(); // 40 bytes -> 10 budget tokens
+        frame.content = "abcd".repeat(10); // 40 bytes -> 10 budget tokens
         frame.token_cost = 10;
         assert!(frame.declares_honest_token_cost());
         assert_eq!(frame.canonical_token_cost(), 10);
