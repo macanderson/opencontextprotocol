@@ -113,7 +113,7 @@ pub async fn run_conformance(target: ProviderTarget) -> ConformanceReport {
                 ));
             }
             checks.push(check_consent_scopes(&info));
-            run_query_and_shutdown_checks(host, &id, &mut checks).await;
+            run_query_and_shutdown_checks(host, &id, &caps, &mut checks).await;
         }
         Err(error) => {
             checks.push(CheckResult::fail(
@@ -124,7 +124,6 @@ pub async fn run_conformance(target: ProviderTarget) -> ConformanceReport {
                 CHECK_FRAME_VALIDITY,
                 CHECK_VERIFY_HONESTY,
                 CHECK_CONSENT_SCOPE,
-                CHECK_FRAME_VALIDITY,
                 CHECK_BUDGET_HONESTY,
                 CHECK_SHUTDOWN,
             ] {
