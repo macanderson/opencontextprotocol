@@ -17,6 +17,12 @@
       "$ref": "#/$defs/Frames"
     },
     {
+      "$ref": "#/$defs/Verify"
+    },
+    {
+      "$ref": "#/$defs/Verified"
+    },
+    {
       "$ref": "#/$defs/Shutdown"
     },
     {
@@ -115,6 +121,29 @@
       ],
       "additionalProperties": false
     },
+
+    "Verify": {
+      "type": "object",
+      "description": "host -> provider. Revalidate frames the host already holds (context/verify, docs/context-reuse.md §4). Carries frame identities only — NEVER frame bodies, so verification costs bytes rather than tokens. Capability-gated: a host sends this only to a provider whose handshake advertised capabilities.verify.",
+      "properties": {
+        "type": { "const": "verify" },
+        "request": { "$ref": "#/$defs/VerifyRequest" }
+      },
+      "required": ["type", "request"],
+      "additionalProperties": false
+    },
+
+    "Verified": {
+      "type": "object",
+      "description": "provider -> host. One verdict per frame identity the provider is answering for (docs/context-reuse.md §4). No frame bodies travel here either; a stale verdict may carry the replacement DIGEST, never the replacement content.",
+      "properties": {
+        "type": { "const": "verified" },
+        "response": { "$ref": "#/$defs/VerifyResponse" }
+      },
+      "required": ["type", "response"],
+      "additionalProperties": false
+    },
+
     "Shutdown": {
       "type": "object",
       "description": "host -> provider. No payload. A well-behaved provider exits cleanly (stdio) or expects no further requests (HTTP).",
@@ -163,6 +192,69 @@
       ],
       "additionalProperties": false
     },
+
+    "FrameId": {
+      "type": "object",
+      "description": "The stable identity of one frame's exact content bytes: (provider id, frame id, content digest). The spine shared by deterministic composition, usage reports, and context/verify (docs/context-reuse.md §1).",
+      "properties": {
+        "provider_id": { "type": "string", "minLength": 1 },
+        "frame_id": { "type": "string", "minLength": 1 },
+        "content_digest": {
+          "type": ["string", "null"],
+          "$comment": "Provider-declared and opaque. Absent ⇒ the frame is not verifiable and a host re-queries it rather than reusing it unchecked (§1 D4)."
+        }
+      },
+      "required": ["provider_id", "frame_id"],
+      "additionalProperties": false
+    },
+
+    "VerifyRequest": {
+      "type": "object",
+      "description": "The frame identities a host asks a provider to revalidate. Identities only — no frame bodies (docs/context-reuse.md §4).",
+      "properties": {
+        "frames": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FrameId" },
+          "$comment": "A host SHOULD only include identities carrying a content_digest; a digest-less frame cannot be revalidated and is re-queried instead."
+        }
+      },
+      "required": ["frames"],
+      "additionalProperties": false
+    },
+
+    "VerdictStatus": {
+      "enum": ["valid", "stale", "gone", "unknown"],
+      "description": "A provider's answer for one frame (docs/context-reuse.md §4). `valid` — content unchanged, the host MAY keep reusing the body it holds. `stale` — the frame exists but its content changed; the host MUST NOT keep serving its copy. `gone` — the frame no longer exists, and re-querying this identity is pointless. `unknown` — the provider cannot say; the host MUST NOT read this as validity. A host reuses a frame ONLY on `valid`: reuse requires a positive answer, never the absence of a negative one."
+    },
+
+    "FrameVerdict": {
+      "type": "object",
+      "description": "One frame's verdict, flattened onto the identity it answers. The identity is echoed in FULL rather than implied by position, so a host correlates by matching and a provider that reorders, omits, or duplicates entries cannot shift a `valid` onto the wrong frame. An identity that comes back with no entry is treated as `unknown` — silence is not validity.",
+      "properties": {
+        "frame": { "$ref": "#/$defs/FrameId" },
+        "status": { "$ref": "#/$defs/VerdictStatus" },
+        "replacement_digest": {
+          "type": ["string", "null"],
+          "$comment": "Only meaningful with status `stale`: the provider's CURRENT digest for the frame, offered so a host can tell what it would be re-fetching. A digest, never a body. Optional — a provider that knows the content changed but not what it is now still answers `stale` honestly."
+        }
+      },
+      "required": ["frame", "status"],
+      "additionalProperties": false
+    },
+
+    "VerifyResponse": {
+      "type": "object",
+      "description": "A provider's answer to a VerifyRequest (docs/context-reuse.md §4).",
+      "properties": {
+        "verdicts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/FrameVerdict" }
+        }
+      },
+      "required": ["verdicts"],
+      "additionalProperties": false
+    },
+
     "DataFlow": {
       "type": "object",
       "description": "Declares what a provider does with data. `egress` is the security-critical field: a conforming host gates egress providers behind recorded, named consent. `egress_scopes` (optional) classes WHERE content goes, for scope-level consent receipts.",
@@ -254,6 +346,10 @@
         "query": {
           "$ref": "#/$defs/QueryCapability"
         },
+        "correlation": {
+          "type": "boolean",
+          "description": "Provider echoes a request's `id` on its reply, enabling pipelining (SPEC.md H4)."
+        },
         "graph": {
           "type": "boolean"
         },
@@ -265,9 +361,18 @@
           "description": "Embedding space identity: <model-id>/<dimensions>[/<normalization>] (SPEC.md E1).",
           "pattern": "^[^/]+/[0-9]+(/[^/]+)?$"
         },
-        "correlation": {
+        "verify": {
           "type": "boolean",
-          "description": "Provider echoes a request's `id` on its reply, enabling pipelining (SPEC.md H4)."
+          "$comment": "Whether the provider answers context/verify (docs/context-reuse.md §4). Optional and defaults to false, so a pre-§4 provider is treated as unsupported and the host falls back to re-querying."
+        },
+        "representations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Representation" },
+          "$comment": "Frame representations this provider can return. Absent/empty ⇒ full only (the legacy default). Advertising compact or reference requires resolve: true."
+        },
+        "resolve": {
+          "type": "boolean",
+          "$comment": "Whether the provider answers context/resolve for a frame's content_ref. Compact/reference support implies resolve support."
         }
       },
       "required": [
@@ -323,6 +428,11 @@
           ],
           "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}(\\.\\d+)?Z$",
           "description": "RFC 3339 UTC timestamp, uppercase T and Z (SPEC.md F4)."
+        },
+        "representation_preferences": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Representation" },
+          "$comment": "Ordered preference; the provider returns the first representation it supports. Absent/empty ⇒ [full]."
         }
       },
       "required": [
@@ -369,6 +479,48 @@
         "graph"
       ]
     },
+
+    "Representation": {
+      "type": "string",
+      "enum": ["full", "compact", "reference"],
+      "$comment": "How a frame carries content. Absent on the wire ⇒ full. full inlines content; compact inlines a transformed rendering plus a resolver handle; reference carries no inline content, only a content_ref and canonical hash."
+    },
+
+    "ContentFidelity": {
+      "type": "string",
+      "enum": ["exact", "normalized", "summarized", "omitted"],
+      "$comment": "Fidelity of carried content relative to the source. Absent ⇒ exact for a legacy full frame."
+    },
+
+    "InlineContentRequirement": {
+      "type": "string",
+      "enum": ["required", "resolvable_reference_allowed"]
+    },
+
+    "ContentRef": {
+      "type": "object",
+      "description": "An opaque resolver handle for a compact/reference frame's content. content_ref.uri is distinct from ContextFrame.uri (the source resource); provider_id names the exact provider that returned the frame so a fan-out host routes context/resolve back to it.",
+      "properties": {
+        "provider_id": { "type": "string", "minLength": 1 },
+        "uri": { "type": "string", "minLength": 1 },
+        "expires_at": { "type": ["string", "null"] }
+      },
+      "required": ["provider_id", "uri"],
+      "additionalProperties": false
+    },
+
+    "Transform": {
+      "type": "object",
+      "description": "The transformation a compact frame applied to its source, so a consumer knows what it is reading.",
+      "properties": {
+        "method": { "type": "string", "minLength": 1 },
+        "implementation": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 }
+      },
+      "required": ["method", "implementation", "version"],
+      "additionalProperties": false
+    },
+
     "ContextFrame": {
       "type": "object",
       "description": "The unit of exchange. A frame is not a string \u2014 it is a structured record of relevance, cost, provenance, and validity. content is untrusted data: a conforming host delimits it as quoted material and never executes it.",
@@ -401,6 +553,20 @@
             "null"
           ]
         },
+        "representation": {
+          "$ref": "#/$defs/Representation",
+          "$comment": "How the frame carries content. Absent ⇒ full (legacy); full frames omit this field on the wire."
+        },
+        "content_fidelity": { "$ref": "#/$defs/ContentFidelity" },
+        "canonical_content_hash": {
+          "type": "string",
+          "minLength": 1,
+          "$comment": "SHA-256 over the complete source content bytes — distinct from content_digest (the inline-content hash). Required for compact/reference frames."
+        },
+        "content_ref": { "$ref": "#/$defs/ContentRef" },
+        "transform": { "$ref": "#/$defs/Transform" },
+        "minimum_content_fidelity": { "$ref": "#/$defs/ContentFidelity" },
+        "inline_content_requirement": { "$ref": "#/$defs/InlineContentRequirement" },
         "score": {
           "type": "number",
           "minimum": 0,
@@ -409,6 +575,11 @@
         "token_cost": {
           "$ref": "#/$defs/u32"
         },
+        "canonical_token_cost": {
+          "$ref": "#/$defs/u32",
+          "$comment": "Token cost of the complete canonical source content. If token_cost or canonical_token_cost is present, tokenizer_ref should name the tokenizer."
+        },
+        "tokenizer_ref": { "type": "string", "minLength": 1 },
         "valid_from": {
           "type": [
             "string",
@@ -457,15 +628,46 @@
           }
         }
       },
-      "required": [
-        "id",
-        "kind",
-        "title",
-        "content",
-        "score",
-        "token_cost",
-        "provenance",
-        "relations"
+      "required": ["id", "kind", "title", "score", "token_cost", "provenance", "relations"],
+      "$comment": "content is required for full/compact frames but omitted for reference frames, so it is not globally required; the allOf below enforces the per-representation invariants.",
+      "allOf": [
+        {
+          "$comment": "reference: no inline content, content_digest, or transform; a resolver handle and canonical hash are required.",
+          "if": {
+            "properties": { "representation": { "const": "reference" } },
+            "required": ["representation"]
+          },
+          "then": {
+            "required": ["content_ref", "canonical_content_hash"],
+            "not": {
+              "anyOf": [
+                { "required": ["content"] },
+                { "required": ["content_digest"] },
+                { "required": ["transform"] }
+              ]
+            }
+          }
+        },
+        {
+          "$comment": "compact: inline content plus inline hash, canonical hash, transform identity, and resolver handle.",
+          "if": {
+            "properties": { "representation": { "const": "compact" } },
+            "required": ["representation"]
+          },
+          "then": {
+            "required": ["content", "content_digest", "canonical_content_hash", "transform", "content_ref"]
+          }
+        },
+        {
+          "$comment": "full (including legacy frames with no representation field): inline content is required.",
+          "if": {
+            "not": {
+              "properties": { "representation": { "enum": ["compact", "reference"] } },
+              "required": ["representation"]
+            }
+          },
+          "then": { "required": ["content"] }
+        }
       ],
       "additionalProperties": false
     },

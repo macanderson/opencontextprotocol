@@ -13,7 +13,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use contextgraph_types::{
-    Capabilities, ContextQuery, ContextQueryResult, PROTOCOL_VERSION, ProviderInfo,
+    Capabilities, ContextQuery, ContextQueryResult, PROTOCOL_VERSION, ProviderInfo, VerifyRequest,
+    VerifyResponse,
 };
 
 use crate::error::HostError;
@@ -177,6 +178,30 @@ impl ContextProvider for HttpProvider {
         }
     }
 
+    async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, HostError> {
+        let reply = post_envelope(
+            &self.client,
+            &self.url,
+            &Envelope::Verify {
+                request: request.clone(),
+            },
+            &self.id,
+        )
+        .await?;
+        match reply {
+            Envelope::Verified { response } => Ok(response),
+            Envelope::Error { message, .. } => Err(HostError::Provider {
+                id: self.id.clone(),
+                message,
+            }),
+            other => Err(HostError::UnexpectedEnvelope {
+                id: self.id.clone(),
+                expected: "verified".into(),
+                got: envelope_kind(&other).into(),
+            }),
+        }
+    }
+
     async fn shutdown(&self) -> Result<(), HostError> {
         // Best-effort teardown notice; a remote endpoint is not ours to reap.
         let _ = post_envelope(&self.client, &self.url, &Envelope::Shutdown, &self.id).await;
@@ -223,11 +248,20 @@ mod tests {
                     id: "frm_h".into(),
                     kind: FrameKind::Doc,
                     title: "remote doc".into(),
-                    content: "remote content".into(),
+                    content: Some("remote content".into()),
                     content_digest: None,
                     uri: Some("https://example.test/doc".into()),
+                    representation: Default::default(),
+                    content_fidelity: None,
+                    canonical_content_hash: None,
+                    content_ref: None,
+                    transform: None,
+                    minimum_content_fidelity: None,
+                    inline_content_requirement: None,
                     score: 0.6,
                     token_cost: 20,
+                    canonical_token_cost: None,
+                    tokenizer_ref: None,
                     valid_from: None,
                     valid_to: None,
                     recorded_at: None,
@@ -253,6 +287,7 @@ mod tests {
             max_frames: 5,
             max_tokens: 4000,
             as_of: None,
+            representation_preferences: vec![],
         }
     }
 

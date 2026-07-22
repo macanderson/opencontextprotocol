@@ -18,7 +18,8 @@ use contextgraph_host::wire::Envelope;
 use contextgraph_types::capability::QueryCapability;
 use contextgraph_types::{
     Capabilities, ContextFrame, ContextQueryResult, DataFlow, EgressScope, ErrorCode, FrameKind,
-    PROTOCOL_VERSION, Provenance, ProviderInfo, budget_tokens,
+    FrameVerdict, PROTOCOL_VERSION, Provenance, ProviderInfo, Representation, Verdict,
+    VerifyRequest, VerifyResponse, budget_tokens,
 };
 
 /// Ways this fixture can deliberately violate the protocol, each tripping a
@@ -61,6 +62,14 @@ enum Misbehave {
     /// Answer a correlated query without echoing its `id` (trips
     /// `correlation`).
     DropCorrelationId,
+    /// Answer `valid` to every `context/verify` entry without comparing
+    /// digests — the rubber stamp that makes reuse unsafe (trips
+    /// `verify-honesty`).
+    RubberStampVerify,
+    /// Advertise `verify` support at the handshake but answer `unknown` to
+    /// everything — a provider that claims a capability it does not have
+    /// (trips `verify-honesty`).
+    HollowVerify,
     /// Declare an off-machine egress scope (`third-party-index`) alongside
     /// `egress: false` — a scope that contradicts the data-flow posture
     /// (trips `consent-scope`).
@@ -156,6 +165,21 @@ fn main() {
                     },
                 );
             }
+            Envelope::Verify { request } => {
+                let response = match args.misbehave {
+                    // Claims every held frame is still good without comparing
+                    // a single digest — the lie `verify-honesty` catches.
+                    Some(Misbehave::RubberStampVerify) => {
+                        VerifyResponse::uniform(&request, Verdict::Valid)
+                    }
+                    // Advertises verify but can never vouch for anything.
+                    Some(Misbehave::HollowVerify) => {
+                        VerifyResponse::uniform(&request, Verdict::Unknown)
+                    }
+                    _ => verify_honestly(&request),
+                };
+                write_envelope(&mut stdout, &Envelope::Verified { response });
+            }
             Envelope::Shutdown => std::process::exit(0),
             // handshake_ack / frames / error are host→provider-invalid inputs;
             // a provider ignores them.
@@ -202,6 +226,12 @@ fn capabilities() -> Capabilities {
         correlation: true,
         graph: false,
         embeddings_fingerprint: None,
+        // This fixture can compare a presented digest against the one it
+        // currently serves, so it advertises pull-based verification. It serves
+        // inline full frames only; it does not resolve references.
+        verify: true,
+        representations: vec![],
+        resolve: false,
     }
 }
 
@@ -217,6 +247,50 @@ fn fixture_digest(seed: u8) -> String {
     format!("sha256:{}", format!("{seed:02x}").repeat(32))
 }
 
+/// The digest this fixture serves for a frame id *right now*, or `None` if it
+/// does not serve that frame at all. Uses the same `fixture_digest` seeds the
+/// served frames declare, so an unmutated frame verifies `valid`.
+fn current_digest(frame_id: &str) -> Option<String> {
+    match frame_id {
+        "frm_getting_started" => Some(fixture_digest(1)),
+        "frm_configuration" => Some(fixture_digest(2)),
+        _ => None,
+    }
+}
+
+/// Answer a `context/verify` request honestly, by comparing each presented
+/// digest against the one this provider currently serves (`docs/context-reuse.md` §4).
+///
+/// This is the whole provider-side contract: the digest is provider-declared
+/// and opaque, so only the provider can say whether the bytes behind an
+/// identity still match. A digest that differs from the current one is exactly
+/// what a mutated source looks like from here.
+fn verify_honestly(request: &VerifyRequest) -> VerifyResponse {
+    VerifyResponse::new(
+        request
+            .frames
+            .iter()
+            .map(|frame| {
+                let verdict = match current_digest(&frame.frame_id) {
+                    // Never served, or no longer served: nothing to revalidate.
+                    None => Verdict::Gone,
+                    Some(current) => match frame.content_digest.as_deref() {
+                        // Nothing presented to compare against.
+                        None => Verdict::Unknown,
+                        Some(presented) if current.as_str() == presented => Verdict::Valid,
+                        // The source moved on. Offer the current digest so the
+                        // host can tell what it would be re-fetching.
+                        Some(_) => Verdict::Stale {
+                            replacement_digest: Some(current),
+                        },
+                    },
+                };
+                FrameVerdict::new(frame.clone(), verdict)
+            })
+            .collect(),
+    )
+}
+
 fn canned_frames(misbehave: Option<Misbehave>) -> Vec<ContextFrame> {
     let bad_score = misbehave == Some(Misbehave::BadScore);
     let empty_citation = misbehave == Some(Misbehave::EmptyCitation);
@@ -229,8 +303,8 @@ fn canned_frames(misbehave: Option<Misbehave>) -> Vec<ContextFrame> {
             .map(|i| {
                 let mut frame = base_frame(bad_score, empty_citation, misbehave);
                 frame.id = format!("frm_flood_{i}");
-                frame.content = "x".into();
-                frame.token_cost = frame.canonical_token_cost();
+                frame.content = Some("x".into());
+                frame.token_cost = frame.expected_inline_token_cost();
                 frame
             })
             .collect();
@@ -295,7 +369,7 @@ fn doc_frame(
         id: id.into(),
         kind: FrameKind::Doc,
         title: title.into(),
-        content: content.into(),
+        content: Some(content.into()),
         // The digest of the content bytes, matching this frame's file
         // provenance digest — a well-formed digest keeps the frame's identity
         // verifiable (`docs/context-reuse.md` §1) and satisfies §F5's grammar.
@@ -304,6 +378,14 @@ fn doc_frame(
             _ => fixture_digest(digest_seed),
         }),
         uri: Some(format!("file:///docs/{file}")),
+        // This fixture serves inline `full` frames only.
+        representation: Representation::Full,
+        content_fidelity: None,
+        canonical_content_hash: None,
+        content_ref: None,
+        transform: None,
+        minimum_content_fidelity: None,
+        inline_content_requirement: None,
         score,
         token_cost: match misbehave {
             // Claims an absurd cost so the sum blows any sane budget (§B1).
@@ -313,6 +395,8 @@ fn doc_frame(
             Some(Misbehave::UnderReportCost) => 1,
             _ => honest_cost,
         },
+        canonical_token_cost: None,
+        tokenizer_ref: None,
         valid_from: Some(match misbehave {
             Some(Misbehave::BadTimestamp) => "last tuesday".into(),
             _ => "2026-01-01T00:00:00Z".to_string(),

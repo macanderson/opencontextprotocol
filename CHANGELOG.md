@@ -12,6 +12,20 @@ which. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1
 ## [Unreleased]
 
 ### Added
+- **Frame representations** on `ContextFrame` — `full` | `compact` | `reference`
+  (CGEP lifecycle phase 2). A frame now states *how* it carries its content:
+  `reference` frames carry no inline content, only a `content_ref` resolver
+  handle and a `canonical_content_hash`; `compact` frames inline a transformed
+  rendering alongside both. Additive and backward-compatible — `representation`
+  absent ⇒ `full`, and full/legacy frames are unchanged on the wire. Adds
+  `content_ref`, `canonical_content_hash`, `content_fidelity`, `transform`,
+  `minimum_content_fidelity`, `inline_content_requirement`, `canonical_token_cost`,
+  and `tokenizer_ref`; `content` becomes optional (absent for references).
+  Negotiated via `ContextQuery.representation_preferences` and
+  `Capabilities.representations` + `Capabilities.resolve`. Enforced in Rust
+  (`ContextFrame::representation_invariants`), the JSON Schema, and conformance
+  tests. See
+  [docs/adr/0005-frame-representations.md](./docs/adr/0005-frame-representations.md).
 - `SPEC.md` — the single normative specification, self-contained and with stable
   requirement anchors (#3).
 - `MIGRATION.md` — rename map, breaking-change list, and the GitHub
@@ -68,6 +82,14 @@ which. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1
   names (`contextgraph-graph`, `contextgraph-example-docs`).
 
 ### Fixed
+- `contextgraph-host` and `contextgraph-conformance` did not compile from a
+  half-applied merge of #37 (egress-scope + consent receipts): `host.rs` used
+  `ConsentReceipt`/`EgressScope` without importing them and a `DataFlow` literal
+  omitted `egress_scopes`; the conformance crate used `FrameId`/`DropReason`
+  without importing them, a test omitted a `CHECK_VERIFY_HONESTY` import, and a
+  check-count assertion was stale (6, now 7). Restored so the workspace builds
+  and the full test suite passes. (Pre-existing on `main`; unrelated to frame
+  representations but required to build the branch.)
 - `docs/index.md`: removed dangling references to `PUBLISHING.md` and
   `RELEASING.md`, which do not exist in this repository.
 - `CONTRIBUTING.md`: commit-message examples and issue-tracker links no longer

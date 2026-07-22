@@ -20,6 +20,7 @@ pub mod scope;
 pub mod token;
 pub mod usage;
 pub mod validate;
+pub mod verify;
 
 pub use capability::{
     Capabilities, DataFlow, ProviderInfo, QueryCapability, embedding_fingerprints_match,
@@ -27,7 +28,10 @@ pub use capability::{
 };
 pub use consent::{ConsentReceipt, Grantor};
 pub use error_code::{ErrorCode, HostReaction};
-pub use frame::{ContextFrame, FrameEmbedding, FrameKind, Provenance, Relation, rel};
+pub use frame::{
+    ContentFidelity, ContentRef, ContextFrame, FrameEmbedding, FrameKind, InlineContentRequirement,
+    Provenance, Relation, Representation, Transform, rel,
+};
 pub use identity::{FrameId, canonical_order};
 pub use query::{ContextQuery, ContextQueryResult};
 pub use scope::EgressScope;
@@ -36,6 +40,7 @@ pub use token::{
 };
 pub use usage::{ProviderUsage, ServedFrame, UsageReport};
 pub use validate::{DIGEST_ALGORITHMS, is_protocol_timestamp, is_well_formed_digest};
+pub use verify::{FrameVerdict, Verdict, VerifyRequest, VerifyResponse};
 
 /// The protocol version string this crate implements. Frozen to `contextgraph/1.0`
 /// only at the public v1.0 release (`SPEC.md` §Version strings).

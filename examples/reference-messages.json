@@ -22,9 +22,10 @@
           "symbol"
         ]
       },
+      "correlation": true,
       "graph": true,
       "embeddings_fingerprint": null,
-      "correlation": true
+      "verify": true
     }
   },
   {
@@ -37,7 +38,9 @@
         "reads": true,
         "writes": false,
         "egress": true,
-        "egress_scopes": ["third-party-model"]
+        "egress_scopes": [
+          "third-party-model"
+        ]
       }
     },
     "capabilities": {
@@ -77,6 +80,7 @@
           "kind": "doc",
           "title": "Retry policy",
           "content": "Retry behavior is set in Config::retry. max_attempts bounds the tries; backoff_ms is the initial delay, doubled each attempt.",
+          "content_digest": "sha256:9f2c3e7a1b",
           "uri": "file:///repo/docs/retry.md",
           "score": 0.92,
           "token_cost": 32,
@@ -99,6 +103,7 @@
           "kind": "symbol",
           "title": "Config::retry",
           "content": "pub struct RetryPolicy { pub max_attempts: u32, pub backoff_ms: u64 }",
+          "content_digest": "sha256:1a2b3c4d5e",
           "uri": "file:///repo/src/config.rs",
           "score": 0.81,
           "token_cost": 18,
@@ -122,11 +127,150 @@
     "id": "q1"
   },
   {
+    "type": "verify",
+    "request": {
+      "frames": [
+        {
+          "provider_id": "repo-graph",
+          "frame_id": "repo-graph:retry-doc",
+          "content_digest": "sha256:9f2c3e7a1b"
+        },
+        {
+          "provider_id": "repo-graph",
+          "frame_id": "repo-graph:retry-sym",
+          "content_digest": "sha256:1a2b3c4d5e"
+        }
+      ]
+    }
+  },
+  {
+    "type": "verified",
+    "response": {
+      "verdicts": [
+        {
+          "frame": {
+            "provider_id": "repo-graph",
+            "frame_id": "repo-graph:retry-doc",
+            "content_digest": "sha256:9f2c3e7a1b"
+          },
+          "status": "valid"
+        },
+        {
+          "frame": {
+            "provider_id": "repo-graph",
+            "frame_id": "repo-graph:retry-sym",
+            "content_digest": "sha256:1a2b3c4d5e"
+          },
+          "status": "stale",
+          "replacement_digest": "sha256:7d8e9f0a1b"
+        }
+      ]
+    }
+  },
+  {
     "type": "error",
     "message": "unsupported frame kind: 'image'",
     "code": "bad_request"
   },
   {
     "type": "shutdown"
+  },
+  {
+    "type": "handshake_ack",
+    "protocol_version": "contextgraph/1.0-draft",
+    "provider": {
+      "name": "cloud-docs",
+      "version": "1.3.0",
+      "data_flow": {
+        "reads": true,
+        "writes": false,
+        "egress": false
+      }
+    },
+    "capabilities": {
+      "query": {
+        "kinds": [
+          "doc"
+        ]
+      },
+      "graph": false,
+      "embeddings_fingerprint": null,
+      "verify": true,
+      "representations": [
+        "full",
+        "compact",
+        "reference"
+      ],
+      "resolve": true
+    }
+  },
+  {
+    "type": "query",
+    "query": {
+      "goal": "summarize the deployment runbook",
+      "query_text": "deployment runbook",
+      "kinds": [
+        "doc"
+      ],
+      "anchors": [],
+      "max_frames": 3,
+      "max_tokens": 512,
+      "representation_preferences": [
+        "compact",
+        "full"
+      ]
+    }
+  },
+  {
+    "type": "frames",
+    "result": {
+      "frames": [
+        {
+          "id": "cloud-docs:runbook-compact",
+          "kind": "doc",
+          "title": "Deployment runbook (summary)",
+          "content": "Roll back with `deploy revert <sha>`; page oncall if the error rate exceeds 2%.",
+          "content_digest": "sha256:11aa22bb33cc44dd",
+          "uri": "file:///repo/docs/runbook.md",
+          "representation": "compact",
+          "content_fidelity": "summarized",
+          "canonical_content_hash": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "content_ref": {
+            "provider_id": "cloud-docs",
+            "uri": "context://cloud-docs/records/doc_runbook_v1"
+          },
+          "transform": {
+            "method": "extractive_summary",
+            "implementation": "provider_default",
+            "version": "1"
+          },
+          "score": 0.9,
+          "token_cost": 24,
+          "canonical_token_cost": 512,
+          "tokenizer_ref": "openai:o200k_base",
+          "provenance": [],
+          "citation_label": "runbook.md (summary)",
+          "relations": []
+        },
+        {
+          "id": "cloud-docs:runbook-ref",
+          "kind": "doc",
+          "title": "Deployment runbook",
+          "uri": "file:///repo/docs/runbook.md",
+          "representation": "reference",
+          "canonical_content_hash": "sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+          "content_ref": {
+            "provider_id": "cloud-docs",
+            "uri": "context://cloud-docs/records/doc_runbook_v1"
+          },
+          "score": 0.9,
+          "token_cost": 0,
+          "provenance": [],
+          "citation_label": "runbook.md",
+          "relations": []
+        }
+      ],
+      "truncated": false
+    }
   }
 ]

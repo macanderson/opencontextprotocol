@@ -18,6 +18,10 @@
 //! - **frame-validity** — queried frames pass `contextgraph-types` validation: score
 //!   in `[0, 1]`, a non-empty title, a non-empty `citation_label` (SPEC.md §6 —
 //!   "NEVER a bare uuid").
+//! - **verify-honesty** — a provider advertising `verify` answers `valid` for
+//!   frames it just served and `stale` when their digests are mutated
+//!   (`docs/context-reuse.md` §4). Skipped when `verify` is not advertised —
+//!   that is the declared fallback, not a failure.
 //! - **budget-honesty** — returned frames' summed `token_cost` never exceeds
 //!   the query budget (SPEC.md §5 — "never lies about cost").
 //! - **shutdown-clean** — the provider tears down without error (SPEC.md §3).
@@ -31,9 +35,11 @@
 //! fixture has `--misbehave` flags that trip each one, proving the suite
 //! catches a broken provider (task deliverable).
 
-use contextgraph_host::{ConsentRecord, ContextProvider, Host, HostError, RawStdioConnection};
+use contextgraph_host::{
+    ConsentRecord, ContextProvider, DropReason, Host, HostError, RawStdioConnection,
+};
 use contextgraph_types::{
-    Capabilities, ConsentReceipt, ContextQuery, ContextQueryResult, Grantor, ProviderInfo,
+    Capabilities, ConsentReceipt, ContextQuery, ContextQueryResult, FrameId, Grantor, ProviderInfo,
 };
 
 mod report;
@@ -44,6 +50,7 @@ pub use report::{CheckResult, CheckStatus, ConformanceReport};
 pub const CHECK_HANDSHAKE: &str = "handshake";
 pub const CHECK_CONSENT_SCOPE: &str = "consent-scope";
 pub const CHECK_FRAME_VALIDITY: &str = "frame-validity";
+pub const CHECK_VERIFY_HONESTY: &str = "verify-honesty";
 pub const CHECK_BUDGET_HONESTY: &str = "budget-honesty";
 pub const CHECK_SHUTDOWN: &str = "shutdown-clean";
 pub const CHECK_MALFORMED: &str = "malformed-input-tolerance";
@@ -108,7 +115,7 @@ pub async fn run_conformance(target: ProviderTarget) -> ConformanceReport {
                 ));
             }
             checks.push(check_consent_scopes(&info));
-            run_query_and_shutdown_checks(host, &id, &mut checks).await;
+            run_query_and_shutdown_checks(host, &id, &caps, &mut checks).await;
         }
         Err(error) => {
             checks.push(CheckResult::fail(
@@ -116,8 +123,9 @@ pub async fn run_conformance(target: ProviderTarget) -> ConformanceReport {
                 format!("could not establish provider: {error}"),
             ));
             for name in [
-                CHECK_CONSENT_SCOPE,
                 CHECK_FRAME_VALIDITY,
+                CHECK_VERIFY_HONESTY,
+                CHECK_CONSENT_SCOPE,
                 CHECK_BUDGET_HONESTY,
                 CHECK_SHUTDOWN,
             ] {
@@ -205,12 +213,18 @@ fn capture_identity(
     ))
 }
 
-async fn run_query_and_shutdown_checks(host: Host, id: &str, checks: &mut Vec<CheckResult>) {
+async fn run_query_and_shutdown_checks(
+    host: Host,
+    id: &str,
+    caps: &Capabilities,
+    checks: &mut Vec<CheckResult>,
+) {
     let query = sample_query();
     match host.query_provider(id, &query).await {
         Ok(result) => {
             let (ok, evidence) = check_frames(&result);
             checks.push(CheckResult::from_bool(CHECK_FRAME_VALIDITY, ok, evidence));
+            checks.push(check_verify_honesty(&host, id, caps, &result).await);
 
             let (budget_ok, budget_evidence) = check_budget(&result, &query);
             checks.push(CheckResult::from_bool(
@@ -222,6 +236,7 @@ async fn run_query_and_shutdown_checks(host: Host, id: &str, checks: &mut Vec<Ch
         Err(error) => {
             let evidence = format!("query failed: {error}");
             checks.push(CheckResult::fail(CHECK_FRAME_VALIDITY, evidence.clone()));
+            checks.push(CheckResult::fail(CHECK_VERIFY_HONESTY, evidence.clone()));
             checks.push(CheckResult::fail(CHECK_BUDGET_HONESTY, evidence));
         }
     }
@@ -241,6 +256,128 @@ async fn run_query_and_shutdown_checks(host: Host, id: &str, checks: &mut Vec<Ch
             "provider vanished before shutdown could be attempted",
         )),
     }
+}
+
+/// Suffix appended to a real digest to simulate a mutated source. Derived from
+/// the provider's own digest, so it is guaranteed to differ from it while
+/// staying vanishingly unlikely to collide with any digest the provider
+/// actually serves.
+const MUTATED_SUFFIX: &str = "-contextgraph-conformance-mutated";
+
+/// Probe `context/verify` honesty (`docs/context-reuse.md` §4, requirement V1).
+///
+/// A provider's digest is opaque and provider-declared, so only the provider
+/// can say whether an identity still names its current bytes — which means the
+/// suite cannot check the *answer*, only that the provider **distinguishes**.
+/// So it asks twice about frames the provider just served:
+///
+/// 1. with the **real** digests it returned — an honest provider says `valid`;
+/// 2. with those digests **mutated** — from the provider's side this is
+///    indistinguishable from a source that changed underneath the host, and an
+///    honest provider says `stale`.
+///
+/// A provider that rubber-stamps everything `valid` fails the second ask; one
+/// that advertises `verify` but can never vouch for anything fails the first.
+/// Both are caught without the suite needing to mutate a real source.
+///
+/// Skipped — not failed — when the provider does not advertise `verify`: that
+/// is the declared capability-gated fallback (V3), and the host re-queries
+/// instead.
+async fn check_verify_honesty(
+    host: &Host,
+    id: &str,
+    caps: &Capabilities,
+    result: &ContextQueryResult,
+) -> CheckResult {
+    if !caps.verify {
+        return CheckResult::skip(
+            CHECK_VERIFY_HONESTY,
+            "provider does not advertise `verify`; a host falls back to re-querying its frames (§4)",
+        );
+    }
+
+    let held: Vec<FrameId> = result
+        .frames
+        .iter()
+        .filter(|frame| frame.content_digest.is_some())
+        .map(|frame| FrameId::new(id, frame.id.clone(), frame.content_digest.clone()))
+        .collect();
+    if held.is_empty() {
+        return CheckResult::skip(
+            CHECK_VERIFY_HONESTY,
+            "provider served no frame carrying a `content_digest`, so nothing is verifiable (§1 D4)",
+        );
+    }
+
+    // Ask 1: the real digests. Every frame the provider just served must
+    // verify valid — otherwise it cannot vouch for its own output.
+    let unchanged = host.verify_frames(&held).await;
+    if !unchanged.dropped.is_empty() {
+        let detail: Vec<String> = unchanged
+            .dropped
+            .iter()
+            .map(|dropped| format!("{} => {:?}", dropped.frame.frame_id, dropped.reason))
+            .collect();
+        return CheckResult::fail(
+            CHECK_VERIFY_HONESTY,
+            format!(
+                "provider advertises `verify` but did not answer `valid` for {} of {} frame(s) it had just served with unchanged digests: {}",
+                unchanged.dropped.len(),
+                held.len(),
+                detail.join(", ")
+            ),
+        );
+    }
+
+    // Ask 2: the same frames with mutated digests — what a changed source
+    // looks like from the provider's side.
+    let mutated: Vec<FrameId> = held
+        .iter()
+        .map(|frame| {
+            FrameId::new(
+                id,
+                frame.frame_id.clone(),
+                frame
+                    .content_digest
+                    .as_ref()
+                    .map(|digest| format!("{digest}{MUTATED_SUFFIX}")),
+            )
+        })
+        .collect();
+    let changed = host.verify_frames(&mutated).await;
+
+    if !changed.retained.is_empty() {
+        return CheckResult::fail(
+            CHECK_VERIFY_HONESTY,
+            format!(
+                "provider answered `valid` for {} frame(s) whose content digest it never served — a rubber stamp that lets a host cite stale evidence",
+                changed.retained.len()
+            ),
+        );
+    }
+    let not_stale: Vec<String> = changed
+        .dropped
+        .iter()
+        .filter(|dropped| !matches!(dropped.reason, DropReason::Stale { .. }))
+        .map(|dropped| format!("{} => {:?}", dropped.frame.frame_id, dropped.reason))
+        .collect();
+    if !not_stale.is_empty() {
+        return CheckResult::fail(
+            CHECK_VERIFY_HONESTY,
+            format!(
+                "a digest mismatch on a frame the provider still serves MUST verify `stale` (§4 V1); got: {}",
+                not_stale.join(", ")
+            ),
+        );
+    }
+
+    CheckResult::pass(
+        CHECK_VERIFY_HONESTY,
+        format!(
+            "provider verified {n} unchanged frame(s) `valid` and all {n} mutated digest(s) `stale`, carrying no frame bodies",
+            n = held.len()
+        ),
+    )
 }
 
 /// Wire-level probe: complete the handshake on a fresh connection, inject a
@@ -320,6 +457,7 @@ pub fn sample_query() -> ContextQuery {
         max_frames: 8,
         max_tokens: 4096,
         as_of: None,
+        representation_preferences: vec![],
     }
 }
 

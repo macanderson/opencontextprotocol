@@ -59,7 +59,8 @@ pub struct Capabilities {
     pub upsert: bool,
     pub graph: bool,
     pub embeddings_fingerprint: Option<String>,
-    pub subscribe: bool,
+    pub subscribe: bool,  // push invalidation (issue #6)
+    pub verify: bool,     // answers context/verify (context-reuse §4); defaults false
 }
 
 // The closed egress-scope vocabulary (context-reuse §3), serialized as a flat
@@ -125,14 +126,26 @@ pub enum FrameKind {
     Snippet, Symbol, Fact, Doc, Memory, Episode, Graph,
 }
 
+pub enum Representation { Full, Compact, Reference }   // absent ⇒ Full (legacy)
+
 pub struct ContextFrame {
     pub id: String,                      // provider-scoped, stable for dedup across queries
     pub kind: FrameKind,
     pub title: String,                   // human label — never a bare uuid
-    pub content: String,                 // untrusted data — host must delimit as quoted material
+    pub content: Option<String>,         // untrusted data; ABSENT for a reference frame
+    pub content_digest: Option<String>,  // inline-content hash (the spec's content_hash); feeds FrameId
     pub uri: Option<String>,
+    pub representation: Representation,   // full | compact | reference (omitted on the wire when full)
+    pub content_fidelity: Option<ContentFidelity>,        // exact | normalized | summarized | omitted
+    pub canonical_content_hash: Option<String>,           // hash of the COMPLETE source content
+    pub content_ref: Option<ContentRef>,                  // opaque resolver handle (compact/reference)
+    pub transform: Option<Transform>,                     // how a compact frame rendered its source
+    pub minimum_content_fidelity: Option<ContentFidelity>,
+    pub inline_content_requirement: Option<InlineContentRequirement>,
     pub score: f32,                      // provider-normalized relevance, [0, 1]
-    pub token_cost: u32,                 // honest, conformance-audited token cost
+    pub token_cost: u32,                 // honest, conformance-audited inline token cost
+    pub canonical_token_cost: Option<u32>,                // cost of the full source (if declared)
+    pub tokenizer_ref: Option<String>,                    // e.g. "openai:o200k_base"
     pub valid_from: Option<String>,
     pub valid_to: Option<String>,
     pub recorded_at: Option<String>,
@@ -140,6 +153,12 @@ pub struct ContextFrame {
     pub citation_label: Option<String>,
     pub embedding: Option<FrameEmbedding>,
     pub relations: Vec<Relation>,
+}
+
+pub struct ContentRef {                  // content_ref.uri is distinct from ContextFrame.uri
+    pub provider_id: String,             // the exact provider that returned this frame
+    pub uri: String,                     // opaque resolver handle for context/resolve
+    pub expires_at: Option<String>,
 }
 
 pub struct Provenance {
@@ -174,6 +193,42 @@ suite checks both:
   conformance failure, not a cosmetic gap. (Whole-platform convention: raw
   ids are never the primary on-screen identifier.)
 
+### Frame representations
+
+A frame states **how** it carries its content through `representation`. This is
+additive: a legacy frame with no `representation` field is a `full` frame, and a
+`full` frame omits the field on the wire, so pre-representation providers and
+stored frames are unchanged.
+
+| Representation | Inline `content` | `content_ref` + `canonical_content_hash` | `content_digest` (inline hash) | `transform` |
+| --- | --- | --- | --- | --- |
+| `full`      | **required** | optional | optional | absent |
+| `compact`   | **required** (a transformed rendering) | **required** | **required** | **required** |
+| `reference` | **absent**   | **required** | absent | absent |
+
+- A `reference` frame carries no inline content at all — only a `content_ref`
+  (an opaque resolver handle) and a `canonical_content_hash` so a host can
+  rehydrate honestly and verifiably. It is **never** encoded as `content: ""`;
+  the field is omitted entirely.
+- `ContextFrame.uri` identifies the source resource; `content_ref.uri` is a
+  distinct opaque resolver handle, and `content_ref.provider_id` names the exact
+  provider a fan-out host routes `context/resolve` back to.
+- `content_digest` is the hash of the **inline** content bytes (the spec's
+  `content_hash`, under its established name; it feeds `FrameId`);
+  `canonical_content_hash` is the hash of the **complete source** content.
+
+`ContextFrame::representation_invariants()` enforces the table above in code, and
+the JSON Schema enforces it on the wire; providers should self-check, and a host
+rejects a frame that lies about its shape.
+
+**Negotiation.** A host states an ordered `ContextQuery.representation_preferences`
+(absent ⇒ `[full]`); the provider returns the first representation it supports
+(`ContextQuery::select_representation`) or answers `unsupported_representation`.
+A provider advertises `Capabilities.representations` and `Capabilities.resolve`;
+because `compact`/`reference` hand the host a `content_ref` to rehydrate,
+advertising either **requires** `resolve` support
+(`Capabilities::representations_consistent`).
+
 ## Reusing context across turns
 
 A single retrieval is only half the story. Reusing retrieved context across the
@@ -190,6 +245,38 @@ revalidation. They surface here as the `content_digest` frame field, the
 `verify` / `verified` envelope variants — all additive within the
 `contextgraph/1` family. Their conformance requirements are consolidated below.
 
+## Context verification
+
+A host revalidates frames it already holds without re-sending any body
+([context-reuse §4](./context-reuse.md#4-context-verification)). Sent only to a
+provider advertising `verify`; otherwise the host re-queries.
+
+```rust
+pub struct VerifyRequest {
+    pub frames: Vec<FrameId>,       // identities only — never frame bodies
+}
+
+pub struct FrameVerdict {
+    pub frame: FrameId,             // echoed in full, so verdicts correlate by match not position
+    pub verdict: Verdict,           // flattened: {"status": "...", ...}
+}
+
+pub enum Verdict {
+    Valid,                                          // unchanged — may keep reusing
+    Stale { replacement_digest: Option<String> },   // changed — a digest, never a body
+    Gone,                                           // no longer exists
+    Unknown,                                        // provider cannot say
+}
+
+pub struct VerifyResponse {
+    pub verdicts: Vec<FrameVerdict>,
+}
+```
+
+A host **MUST** keep reusing a frame only on an explicit `valid` — an identity
+answered `unknown`, or not answered at all, is evicted like any other. Reuse
+requires a positive answer, never the absence of a negative one.
+
 ## Wire framing (defined in `contextgraph-host`, not `contextgraph-types`)
 
 `contextgraph-types` defines the payload shapes above; `contextgraph-host::wire::Envelope`
@@ -197,7 +284,7 @@ defines how they're framed on the wire — newline-delimited JSON (NDJSON), one
 `serde_json` value per line over stdio, or one JSON body per streamable-HTTP
 request/response. See [Implementing a provider](./implementing-a-provider.md)
 for the full envelope vocabulary (`handshake` / `handshake_ack` / `query` /
-`frames` / `shutdown` / `error`) and the version-compatibility rule. See
+`frames` / `verify` / `verified` / `shutdown` / `error`) and the version-compatibility rule. See
 [`examples/`](../examples/) for diffable wire transcripts of a complete session,
 or the [machine-readable JSON Schema](../schema/contextgraph-envelope.schema.json) to
 validate messages in any language.
@@ -283,8 +370,10 @@ page; they are consolidated here because this section is the authoritative list.
 | U1 | A host **MUST** be able to produce a usage report for any query it executed, whose consumed total equals the summed `token_cost` of the served frames it reports. | `contextgraph-host::FanOut::usage_report`; `usage-report` conformance check |
 | C5 | A provider **MUST** declare its egress scopes (`egress_scopes`) truthfully and consistently with `data_flow.egress`; an off-machine scope alongside `egress: false` is a conformance failure. | `consent-scope` conformance check |
 | C6 | A host **MUST** reject a frame whose provider declares an egress scope with no live matching [consent receipt](./context-reuse.md#3-consent-scopes-and-receipts), with a typed error, before transmitting the query. | `ConsentStore` scope gate |
-| V1 | A provider advertising the `verify` capability **MUST** answer a `context/verify` request honestly: a current identity ⇒ `valid`; a digest it no longer serves ⇒ `stale`/`gone`/`unknown`, never `valid`. | `verify` conformance check |
-| V2 | A host **MUST** treat a `stale`/`gone` verdict as evicting the frame from the composed context, and **MUST** fall back to re-query for providers without `verify`. | `contextgraph-host` verify support |
+| V1 | A provider advertising `verify` **MUST** answer honestly by comparing digests: `valid` when the presented digest matches what it currently serves, `stale` when it differs on a frame it still serves. It **MUST NOT** answer `valid` for content bytes it is not serving. | `verify-honesty` conformance check |
+| V2 | A host **MUST** keep reusing a held frame only on an explicit `valid`; `stale`, `gone`, `unknown`, and a missing verdict all evict it. | `contextgraph-host::Host::verify_frames` default-deny partition |
+| V3 | A host **MUST NOT** send `context/verify` to a provider that does not advertise `capabilities.verify`, and **MUST** fall back to re-querying those frames. | `Host::verify_frames` capability gate; `ContextProvider::verify` default |
+| V4 | Neither a verify request nor its response **MAY** carry frame bodies; a `stale` verdict carries at most a replacement **digest**. | `VerifyRequest`/`VerifyResponse` shapes; `verify_wire` no-bodies test |
 
 ## Version strings
 

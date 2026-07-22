@@ -40,7 +40,10 @@
 //! fall back to lock-step. Concurrency is negotiated by observation, not by a
 //! capability flag.
 
-use contextgraph_types::{Capabilities, ContextQuery, ContextQueryResult, ErrorCode, ProviderInfo};
+use contextgraph_types::{
+    Capabilities, ContextQuery, ContextQueryResult, ErrorCode, ProviderInfo, VerifyRequest,
+    VerifyResponse,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::error::HostError;
@@ -76,6 +79,13 @@ pub enum Envelope {
         id: Option<String>,
         result: ContextQueryResult,
     },
+    /// Host → provider revalidation request: are these held frames still
+    /// valid (`docs/context-reuse.md` §4 `context/verify`)? Carries frame
+    /// identities only — never bodies. Capability-gated: a host sends it only
+    /// to a provider advertising [`Capabilities::verify`](contextgraph_types::Capabilities::verify).
+    Verify { request: VerifyRequest },
+    /// Provider → host per-frame verdicts.
+    Verified { response: VerifyResponse },
     /// Lifecycle teardown; the provider should exit cleanly.
     Shutdown,
     /// Provider-reported failure — lets a provider report a bad request
@@ -174,6 +184,8 @@ pub fn envelope_kind(env: &Envelope) -> &'static str {
         Envelope::HandshakeAck { .. } => "handshake_ack",
         Envelope::Query { .. } => "query",
         Envelope::Frames { .. } => "frames",
+        Envelope::Verify { .. } => "verify",
+        Envelope::Verified { .. } => "verified",
         Envelope::Shutdown => "shutdown",
         Envelope::Error { .. } => "error",
     }
@@ -259,6 +271,7 @@ mod tests {
                     max_frames: 1,
                     max_tokens: 1,
                     as_of: None,
+                    representation_preferences: vec![],
                 },
             },
             Envelope::Frames {
@@ -308,6 +321,7 @@ mod tests {
             max_frames: 5,
             max_tokens: 2000,
             as_of: None,
+            representation_preferences: vec![],
         };
         let env = Envelope::Query {
             id: None,

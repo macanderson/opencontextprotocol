@@ -27,7 +27,8 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use contextgraph_types::{
-    Capabilities, ContextQuery, ContextQueryResult, PROTOCOL_VERSION, ProviderInfo,
+    Capabilities, ContextQuery, ContextQueryResult, PROTOCOL_VERSION, ProviderInfo, VerifyRequest,
+    VerifyResponse,
 };
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
@@ -390,6 +391,26 @@ impl ContextProvider for StdioProvider {
         }
     }
 
+    async fn verify(&self, request: &VerifyRequest) -> Result<VerifyResponse, HostError> {
+        let mut conn = self.conn.lock().await;
+        conn.send(&Envelope::Verify {
+            request: request.clone(),
+        })
+        .await?;
+        match conn.recv().await? {
+            Envelope::Verified { response } => Ok(response),
+            Envelope::Error { message, .. } => Err(HostError::Provider {
+                id: self.id.clone(),
+                message,
+            }),
+            other => Err(HostError::UnexpectedEnvelope {
+                id: self.id.clone(),
+                expected: "verified".into(),
+                got: envelope_kind(&other).into(),
+            }),
+        }
+    }
+
     async fn shutdown(&self) -> Result<(), HostError> {
         let mut conn = self.conn.lock().await;
         conn.shutdown().await
@@ -440,11 +461,20 @@ mod tests {
             id: "frm_1".into(),
             kind: FrameKind::Doc,
             title: "README".into(),
-            content: "hello from a stdio provider".into(),
+            content: Some("hello from a stdio provider".into()),
             content_digest: None,
             uri: Some("file:///README.md".into()),
+            representation: Default::default(),
+            content_fidelity: None,
+            canonical_content_hash: None,
+            content_ref: None,
+            transform: None,
+            minimum_content_fidelity: None,
+            inline_content_requirement: None,
             score: 0.7,
             token_cost: 12,
+            canonical_token_cost: None,
+            tokenizer_ref: None,
             valid_from: None,
             valid_to: None,
             recorded_at: None,
@@ -474,6 +504,7 @@ mod tests {
             max_frames: 5,
             max_tokens: 4000,
             as_of: None,
+            representation_preferences: vec![],
         }
     }
 
