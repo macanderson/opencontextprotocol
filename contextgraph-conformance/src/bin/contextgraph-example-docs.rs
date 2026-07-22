@@ -49,6 +49,10 @@ enum Misbehave {
     /// everything — a provider that claims a capability it does not have
     /// (trips `verify-honesty`).
     HollowVerify,
+    /// Declare an off-machine egress scope (`third-party-index`) alongside
+    /// `egress: false` — a scope that contradicts the data-flow posture
+    /// (trips `consent-scope`).
+    ScopeLie,
 }
 
 /// The digests this fixture currently serves, one per canned frame. Verify
@@ -105,7 +109,7 @@ fn main() {
                     &mut stdout,
                     &Envelope::HandshakeAck {
                         protocol_version,
-                        provider: provider_info(),
+                        provider: provider_info(args.misbehave),
                         capabilities: capabilities(),
                     },
                 );
@@ -156,16 +160,24 @@ fn write_envelope(stdout: &mut std::io::Stdout, envelope: &Envelope) {
     }
 }
 
-fn provider_info() -> ProviderInfo {
+fn provider_info(misbehave: Option<Misbehave>) -> ProviderInfo {
+    // A docs index reads the query and serves local frames; nothing leaves the
+    // machine, so it honestly declares the `local-only` egress scope. The
+    // `scope-lie` mode instead declares an off-machine scope alongside
+    // `egress: false` — a contradiction the `consent-scope` check must catch.
+    let (egress, egress_scopes) = if misbehave == Some(Misbehave::ScopeLie) {
+        (false, vec![EgressScope::ThirdPartyIndex])
+    } else {
+        (false, vec![EgressScope::LocalOnly])
+    };
     ProviderInfo {
         name: "contextgraph-example-docs".into(),
         version: env!("CARGO_PKG_VERSION").into(),
-        // A docs index reads the query and serves local frames; nothing
-        // leaves the machine.
         data_flow: DataFlow {
             reads: true,
             writes: false,
-            egress: false,
+            egress,
+            egress_scopes,
         },
     }
 }
