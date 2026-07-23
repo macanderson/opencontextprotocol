@@ -27,8 +27,23 @@ This ADR records a **host-side reference component** that closes that gap: it
 treats the user's paste as a *local provider*. Like
 [`compose_context`](../../contextgraph-host/src/compose.rs) — the ingestion-side
 of which this is the dual — it is reference host behavior, **not** part of the
-wire protocol. No envelope, schema, or `SPEC.md` normative text changes. It uses
+wire protocol. No envelope shape or `SPEC.md` normative text changes; it uses
 only the frame fields [ADR 0005](./0005-frame-representations.md) already added.
+
+It does carry **one corrective schema fix**, and finding it is the point.
+Ingesting is the first thing in the repo to *serialize* frames from the
+reference Rust type and validate that JSON against
+[`schema/contextgraph-envelope.schema.json`](../../schema/contextgraph-envelope.schema.json)
+(prior schema coverage validated only hand-authored example transcripts). Doing
+so exposed that the schema listed `provenance` and `relations` as globally
+`required`, while the reference `ContextFrame` serializer omits both when empty
+(`skip_serializing_if = "Vec::is_empty"`) and no frame-validity check (SPEC §6,
+F1–F5) requires either. A frame with no graph edges — which every ingest frame
+is — therefore failed schema validation. The schema's `required` is corrected to
+exactly what the serializer always emits (`id`, `kind`, `title`, `score`,
+`token_cost`); `content` stays governed per-representation by the existing
+`allOf`. This is the repo's own discipline working as intended: a claim
+("frames are wire-conformant") made loud and then made true.
 
 ### What it is not
 
@@ -147,3 +162,9 @@ local.
 - Distillation quality (which log lines are salient, how a table is sampled) is
   provider policy, exactly as ranking and compaction are elsewhere. It is not
   standardized, and improving it never touches the protocol.
+- The JSON Schema now requires of a `ContextFrame` only what the reference
+  serializer always emits. A new conformance test
+  (`contextgraph-conformance/tests/ingest_conformance.rs`) validates real
+  ingested frames — full, compact, and reference — against the SPEC §6 frame
+  check, the §B budget check, the representation invariants, and the schema's
+  required-key set, closing the gap that let the mismatch exist unexercised.

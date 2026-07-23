@@ -20,8 +20,10 @@ which. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1
   full bytes rehydratable via a `[full]` re-query. Deterministic segmentation,
   honest `token_cost`/`content_digest` per representation (§B3), `derivation`
   (not `file`) provenance, and exact `verify` on immutable content. Local-only
-  and egress-free — no consent friction. Host-side reference behavior; no wire,
-  schema, or `SPEC.md` change. See
+  and egress-free — no consent friction. Host-side reference behavior; no wire
+  shape or `SPEC.md` change. Ships a wire-conformance test that validates real
+  ingested frames (full/compact/reference) against the frame, budget, and JSON
+  Schema contracts. See
   [docs/adr/0006-prompt-ingestion-as-a-local-provider.md](./docs/adr/0006-prompt-ingestion-as-a-local-provider.md).
 - **Frame representations** on `ContextFrame` — `full` | `compact` | `reference`
   (CGEP lifecycle phase 2). A frame now states *how* it carries its content:
@@ -58,6 +60,16 @@ which. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1
 - **Breaking:** `Capabilities.upsert`, `Capabilities.subscribe`, and
   `QueryCapability.filters` — negotiable at handshake but unreachable by any
   host. Wire-compatible; Rust API breaking (#5, #6, #11).
+
+### Fixed
+- JSON Schema: a `ContextFrame`'s `required` is now exactly what the reference
+  serializer always emits (`id`, `kind`, `title`, `score`, `token_cost`).
+  `provenance` and `relations` were listed as globally required but are
+  `skip_serializing_if = Vec::is_empty` in the reference type and required by no
+  frame-validity check, so a Rust-serialized frame with no edges failed schema
+  validation. Surfaced by ADR 0006's wire-conformance test — the first to
+  validate serialized frames (not just hand-authored examples) against the
+  schema. `content` remains governed per-representation by the existing `allOf`.
 
 ### Changed
 - **Breaking:** `token_cost` MUST now equal the canonical count for its content.
