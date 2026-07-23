@@ -12,6 +12,17 @@ which. The format is based on [Keep a Changelog](https://keepachangelog.com/en/1
 ## [Unreleased]
 
 ### Added
+- **Prompt ingestion as a local provider** (`contextgraph_host::ingest`) — the
+  ingestion-side dual of `compose_context`. Turns a user's paste into an ordinary
+  `ContextProvider`: intent passes through verbatim as `query.goal`, directory
+  references become `query.anchors`, and pasted evidence (logs, tables, code,
+  notes) becomes content-addressed frames served `compact` by default with the
+  full bytes rehydratable via a `[full]` re-query. Deterministic segmentation,
+  honest `token_cost`/`content_digest` per representation (§B3), `derivation`
+  (not `file`) provenance, and exact `verify` on immutable content. Local-only
+  and egress-free — no consent friction. Host-side reference behavior; no wire,
+  schema, or `SPEC.md` change. See
+  [docs/adr/0006-prompt-ingestion-as-a-local-provider.md](./docs/adr/0006-prompt-ingestion-as-a-local-provider.md).
 - **Frame representations** on `ContextFrame` — `full` | `compact` | `reference`
   (CGEP lifecycle phase 2). A frame now states *how* it carries its content:
   `reference` frames carry no inline content, only a `content_ref` resolver
