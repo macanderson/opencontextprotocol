@@ -49,8 +49,18 @@ function writeEnvelope(envelope: Envelope): void {
 export function runStdioProvider(provider: Provider): void {
   const rl = readline.createInterface({ input: process.stdin, terminal: false });
 
+  // Serialize line handling: readline emits buffered lines synchronously in a
+  // single tick, but `handleLine` is async (a `query`/`verify` handler suspends
+  // at its `await` before writing its reply). Chaining each line's handler
+  // after the previous one's promise ensures a later `shutdown` line only runs
+  // — and calls `process.exit(0)` — after all prior replies have been written,
+  // instead of racing ahead of their pending microtasks (which pipelined hosts
+  // rely on, since this SDK advertises `correlation: true`).
+  let queue: Promise<void> = Promise.resolve();
   rl.on("line", (line: string) => {
-    void handleLine(provider, line);
+    // Keep the chain alive even if a handler rejects, so a single failing line
+    // never drops the replies for lines that follow it.
+    queue = queue.then(() => handleLine(provider, line)).catch(() => {});
   });
   // EOF / a broken pipe means the host is gone; exit cleanly.
   rl.on("close", () => process.exit(0));
