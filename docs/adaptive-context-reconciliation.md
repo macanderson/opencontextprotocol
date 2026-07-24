@@ -107,6 +107,28 @@ holding editable local copies plus CGEP naming.
   (six portable directive kinds), C1 (`as_of_*` field names), E2 (portable
   `project_id`), E4 (policy-executing operations).
 
+## Coverage of the #5–#13 normative track
+
+#27 asks that adopted items fold into the existing normative-track issues #5–#13.
+For completeness, here is every issue in that range and where it lands — including
+the ones the bundle does **not** touch:
+
+| Issue | Bundle relevance | Where it goes |
+|---|---|---|
+| #5 write path | `context/records/append` (row D2) | folded → #5 |
+| #6 subscribe | pull-based; bundle doesn't push it | unchanged (defer) |
+| #7 graph frames / relation vocab | bundle adds no graph-frame surface | untouched by the bundle |
+| #8 token_cost semantics | bundle's token fields (row C3) | already normative (ADR 0003); nothing to adopt |
+| #9 error codes | bundle's 28-code list (row D5) | routed to #49 (frame/query codes) + #28 (record codes) — the better homes than #9's 6-code table |
+| #10 temporal enforcement | RFC 3339 + `as_of` (rows C1/C2) | folded → #10 |
+| #11 query filters | bundle adds no query-filter surface | untouched by the bundle |
+| #12 digest / provenance | digest format + attestation (row C5) | folded → #12 |
+| #13 HTTP auth | bundle is transport-agnostic on auth | untouched by the bundle |
+
+Newer issues (#28 exchange profile, #49 SPEC.md completeness, #50 resolve) are the
+better homes for the lifecycle/representation items than the #5–#13 range, and are
+used where they fit — see the disposition summary.
+
 ## Enforcement (so it does not re-drift)
 
 The structural guarantee is that the normative frame text lives in exactly one
